@@ -1,7 +1,8 @@
 import { resolve } from 'node:path'
 import { defineConfig } from 'vitest/config'
+import type { ViteUserConfigExport } from 'vitest/config'
 
-export default defineConfig({
+const config: ViteUserConfigExport = defineConfig({
   test: {
     // Enable globals for describe, it, expect, etc.
     globals: true,
@@ -63,3 +64,5 @@ export default defineConfig({
     },
   },
 })
+
+export default config

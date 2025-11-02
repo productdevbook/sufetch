@@ -122,13 +122,13 @@ async function createIdentity() {
             first: 'John',
             last: 'Doe',
           },
-        },
+        } as any, // API traits schema is dynamic/flexible
       },
     })
 
     console.log('✅ Identity created successfully')
     console.log('   ID:', response.id)
-    console.log('   Email:', response.traits?.email)
+    console.log('   Email:', (response.traits as any)?.email)
 
     return response
   }
@@ -141,7 +141,7 @@ async function createIdentity() {
  * Example 4: Delete an identity by ID.
  * Shows proper error handling for delete operations.
  */
-async function deleteIdentity(identityId: string) {
+export async function deleteIdentity(identityId: string): Promise<void> {
   console.log(`\n🗑️  Deleting identity ${identityId}...`)
 
   try {
@@ -250,7 +250,7 @@ async function getOAuth2Client(clientId: string) {
  * Example 8: Delete an OAuth2 client.
  * Demonstrates proper cleanup of OAuth2 clients.
  */
-async function deleteOAuth2Client(clientId: string) {
+export async function deleteOAuth2Client(clientId: string): Promise<void> {
   console.log(`\n🗑️  Deleting OAuth2 client ${clientId}...`)
 
   try {
@@ -276,7 +276,7 @@ async function deleteOAuth2Client(clientId: string) {
  * Scenario 1: Complete identity management workflow.
  * Creates an identity, retrieves it, and optionally deletes it.
  */
-async function identityManagementWorkflow() {
+export async function identityManagementWorkflow(): Promise<void> {
   console.log('\n=== Identity Management Workflow ===')
 
   // Get schema first
@@ -299,7 +299,7 @@ async function identityManagementWorkflow() {
  * Scenario 2: OAuth2 client lifecycle.
  * Creates a client, retrieves it, and optionally deletes it.
  */
-async function oauth2ClientLifecycle() {
+export async function oauth2ClientLifecycle(): Promise<void> {
   console.log('\n=== OAuth2 Client Lifecycle ===')
 
   // Create new OAuth2 client

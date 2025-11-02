@@ -46,7 +46,7 @@ export function loadToonFixture(filename: string): any {
  * @param args - Tool arguments
  * @returns Mock MCP request object
  */
-export function createMockMCPRequest(name: string, args: Record<string, any> = {}) {
+export function createMockMCPRequest(name: string, args: Record<string, any> = {}): { params: { name: string, arguments: Record<string, any> } } {
   return {
     params: {
       name,

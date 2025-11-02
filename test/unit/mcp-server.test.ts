@@ -85,7 +85,7 @@ describe('mCP Server - API Info Extraction', () => {
   })
 
   it('should handle missing optional fields', () => {
-    const spec = {
+    const spec: any = {
       openapi: '3.0.0',
       info: {
         title: 'Minimal API',
@@ -254,7 +254,7 @@ describe('mCP Server - Error Handling', () => {
   it('should handle invalid TOON content', () => {
     // TOON decode might not throw for all invalid content
     // It may return an empty object or malformed data
-    const result = decode('invalid toon content')
+    const result = decode('invalid toon content') as any
 
     // The result should not be a valid OpenAPI spec
     expect(result?.openapi).toBeUndefined()

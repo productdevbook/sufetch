@@ -35,7 +35,7 @@ describe('build Pipeline - TOON Conversion', () => {
     const toonContent = readFileSync(toonPath, 'utf-8')
 
     // Should be able to decode without errors
-    const spec = decode(toonContent)
+    const spec = decode(toonContent) as any
 
     expect(spec).toBeDefined()
     expect(spec.openapi).toBeDefined()
@@ -46,7 +46,7 @@ describe('build Pipeline - TOON Conversion', () => {
     const toonPath = join(SPECS_DIR, 'ory/hydra.toon')
     const toonContent = readFileSync(toonPath, 'utf-8')
 
-    const spec = decode(toonContent)
+    const spec = decode(toonContent) as any
 
     expect(spec).toBeDefined()
     expect(spec.openapi).toBeDefined()
@@ -239,7 +239,7 @@ describe('build Pipeline - File Integrity', () => {
     if (existsSync(jsonPath) && existsSync(toonPath)) {
       const jsonSpec = JSON.parse(readFileSync(jsonPath, 'utf-8'))
       const toonContent = readFileSync(toonPath, 'utf-8')
-      const toonSpec = decode(toonContent)
+      const toonSpec = decode(toonContent) as any
 
       // Key metadata should match
       expect(toonSpec.info.title).toBe(jsonSpec.info.title)
@@ -255,7 +255,7 @@ describe('build Pipeline - File Integrity', () => {
     if (existsSync(jsonPath) && existsSync(toonPath)) {
       const jsonSpec = JSON.parse(readFileSync(jsonPath, 'utf-8'))
       const toonContent = readFileSync(toonPath, 'utf-8')
-      const toonSpec = decode(toonContent)
+      const toonSpec = decode(toonContent) as any
 
       expect(toonSpec.info.title).toBe(jsonSpec.info.title)
       expect(toonSpec.info.version).toBe(jsonSpec.info.version)

@@ -1,30 +1,82 @@
+<!-- [![ToonFetch banner](./.github/assets/banner.svg)](https://github.com/productdevbook/toonfetch) -->
+
 # ToonFetch
 
-Type-safe OpenAPI clients for Ory services with an MCP server for AI-driven API exploration.
+<p>
+  <a href="https://www.npmjs.com/package/toonfetch"><img src="https://img.shields.io/npm/v/toonfetch.svg?style=flat&colorA=18181B&colorB=28CF8D" alt="Version"></a>
+  <a href="https://www.npmjs.com/package/toonfetch"><img src="https://img.shields.io/npm/dm/toonfetch.svg?style=flat&colorA=18181B&colorB=28CF8D" alt="Downloads"></a>
+  <a href="https://github.com/productdevbook/toonfetch/blob/main/LICENSE"><img src="https://img.shields.io/github/license/productdevbook/toonfetch.svg?style=flat&colorA=18181B&colorB=28CF8D" alt="License"></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.7-18181B?style=flat&logo=typescript&colorB=3178C6" alt="TypeScript"></a>
+  <a href="https://github.com/productdevbook/toonfetch"><img src="https://img.shields.io/badge/MCP%20Server-18181B?style=flat&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMkw0IDdWMTdMMTIgMjJMMjAgMTdWN0wxMiAyWiIgc3Ryb2tlPSIjRkZGIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=&colorB=28CF8D" alt="MCP Server"></a>
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
-[![pnpm](https://img.shields.io/badge/pnpm-9.15-orange.svg)](https://pnpm.io/)
+> Type-safe OpenAPI clients with MCP server for AI-driven API exploration
+
+## Table of Contents
+
+- [What is ToonFetch?](#what-is-toonfetch)
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Supported APIs](#supported-apis)
+- [MCP Server Setup](#mcp-server-setup)
+- [Adding New APIs](#adding-new-apis)
+- [Development](#development)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+
+---
+
+## What is ToonFetch?
+
+ToonFetch combines two powerful tools:
+
+1. **Type-Safe API Clients** - Generate fully-typed TypeScript clients from OpenAPI specifications
+2. **MCP Server** - Let AI assistants (like Claude) explore your APIs and generate code
+
+Built with [apiful](https://github.com/lisnote/apiful) and [TOON format](https://github.com/toon-format/toon) for efficient OpenAPI spec compression.
 
 ## Features
 
-- **Type-Safe API Clients** - Fully typed OpenAPI clients for Ory Kratos and Hydra using `apiful`
-- **MCP Server** - Model Context Protocol server for Claude and other AI assistants to introspect and generate code for APIs
-- **TOON Format** - Compressed OpenAPI specs (40-45% smaller) using TOON format for efficient token usage
-- **Auto-Discovery** - Automatic service detection and type generation from OpenAPI specifications
-- **Modern TypeScript** - Built with TypeScript 5.7, strict mode, and ESNext features
+- ✨ **Fully Type-Safe** - Autocomplete and type checking for all API calls
+- 🤖 **MCP Integration** - AI assistants can explore and generate code for your APIs
+- 📦 **Compressed Specs** - TOON format reduces OpenAPI specs by 40-45%
+- 🔄 **Auto-Discovery** - Automatic service detection and type generation
+- 🛠️ **Modern Stack** - TypeScript 5.7, ESNext, strict mode
+- 🧪 **Well-Tested** - 76+ tests with >60% coverage
 
 ## Installation
 
-```bash
-# Using pnpm (recommended)
-pnpm add toonfetch
+### For Using the API Client
 
-# Using npm
+```bash
+# npm
 npm install toonfetch
 
-# Using yarn
+# pnpm
+pnpm add toonfetch
+
+# yarn
 yarn add toonfetch
+```
+
+### For MCP Server (Global)
+
+```bash
+# Install globally
+npm install -g toonfetch
+
+# Verify installation
+toonfetch-mcp --version
+```
+
+### For Development
+
+```bash
+git clone https://github.com/productdevbook/toonfetch.git
+cd toonfetch
+pnpm install
+pnpm build
 ```
 
 ## Quick Start
@@ -34,46 +86,110 @@ yarn add toonfetch
 ```typescript
 import { createClient, kratos } from 'toonfetch/ory'
 
-// Create a typed client for Ory Kratos
+// Create a typed client
 const client = createClient({
-  baseURL: 'https://your-kratos-instance.com',
+  baseURL: 'https://your-api.com',
+  headers: {
+    'Authorization': 'Bearer your-token'
+  }
 }).with(kratos)
 
 // Fully typed requests and responses
 const schema = await client('/schemas/{id}', {
   method: 'GET',
-  path: { id: 'default' },
+  path: { id: 'default' }  // ✅ Type-checked
 })
 
-// Create an identity
-const identity = await client('/admin/identities', {
-  method: 'POST',
-  body: {
-    schema_id: 'default',
-    traits: {
-      email: 'user@example.com',
-    },
-  },
-})
+// TypeScript knows the response type
+console.log(schema.properties)  // ✅ Autocomplete works
 ```
 
-### Using the MCP Server
+### Using with AI Assistants (MCP)
 
-The MCP server allows Claude and other AI assistants to explore and generate code for your APIs.
+See the [MCP Server Setup](#mcp-server-setup) section below.
 
-#### 1. Build the Project
+## Supported APIs
+
+ToonFetch currently includes:
+
+| API | Description | Endpoints | Import |
+|-----|-------------|-----------|--------|
+| **Ory Kratos** | Identity & user management | 50+ | `toonfetch/ory` |
+| **Ory Hydra** | OAuth 2.0 & OpenID Connect | 40+ | `toonfetch/ory` |
+
+**Want to add more?** See [Adding New APIs](#adding-new-apis).
+
+## MCP Server Setup
+
+The MCP server lets AI assistants (like Claude Desktop) explore your APIs and generate code examples.
+
+### Prerequisites
+
+- [Claude Desktop](https://claude.ai/download) (or another MCP client)
+- Node.js 18+
+
+### Step 1: Install
+
+**Option A: Global Install (Recommended)**
 
 ```bash
-pnpm build
+npm install -g toonfetch
 ```
 
-#### 2. Configure Claude Desktop
+**Option B: npx (No install needed)**
 
-Add to your Claude Desktop configuration:
+```bash
+# Just use npx in the config (see Step 2)
+```
 
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Option C: Local Build (For contributors)**
 
-**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+```bash
+git clone https://github.com/productdevbook/toonfetch.git
+cd toonfetch
+pnpm install && pnpm build
+```
+
+### Step 2: Configure Claude Desktop
+
+#### Find the Config File
+
+| OS | Path |
+|----|------|
+| **macOS** | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| **Windows** | `%APPDATA%\Claude\claude_desktop_config.json` |
+| **Linux** | `~/.config/Claude/claude_desktop_config.json` |
+
+If the file doesn't exist, create it.
+
+#### Add ToonFetch Server
+
+**For Global Install:**
+
+```json
+{
+  "mcpServers": {
+    "toonfetch": {
+      "command": "toonfetch-mcp"
+    }
+  }
+}
+```
+
+**For npx (no install):**
+
+```json
+{
+  "mcpServers": {
+    "toonfetch": {
+      "command": "npx",
+      "args": ["-y", "toonfetch"]
+    }
+  }
+}
+```
+
+**For Local Build:**
 
 ```json
 {
@@ -86,161 +202,278 @@ Add to your Claude Desktop configuration:
 }
 ```
 
-#### 3. Restart Claude Desktop
+**Finding the absolute path (Local Build only):**
 
-The MCP server provides these tools:
-- `list_apis` - List all available APIs
-- `get_api_info` - Get API metadata
-- `search_endpoints` - Search endpoints by path/method/description
-- `get_endpoint_details` - Get detailed endpoint information
-- `get_schema_details` - Get schema/model definitions
-- `generate_code_example` - Generate TypeScript code examples
-- `get_quickstart` - Generate quickstart guides
+```bash
+# macOS/Linux
+cd /path/to/toonfetch && echo "$(pwd)/dist/mcp-server.js"
 
-## Available APIs
-
-### Ory Kratos
-Identity and user management API.
-
-```typescript
-import { createClient, kratos } from 'toonfetch/ory'
+# Windows PowerShell
+cd C:\path\to\toonfetch; "$(Get-Location)\dist\mcp-server.js"
 ```
 
-### Ory Hydra
-OAuth 2.0 and OpenID Connect server.
+### Step 3: Restart Claude Desktop
+
+1. Quit Claude Desktop completely
+2. Reopen it
+3. Look for the 🔌 MCP icon
+
+### Step 4: Test It
+
+In Claude Desktop, type:
+
+```
+List available APIs using toonfetch
+```
+
+Claude should show you the available APIs (Ory Kratos, Ory Hydra, etc.).
+
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_apis` | List all available APIs |
+| `get_api_info` | Get API metadata |
+| `search_endpoints` | Search by path/method/description |
+| `get_endpoint_details` | Get full endpoint specs |
+| `get_schema_details` | Get data schemas |
+| `generate_code_example` | Generate TypeScript code |
+| `get_quickstart` | Get API quickstart guide |
+
+## Adding New APIs
+
+ToonFetch auto-discovers OpenAPI specs. Here's how to add your own:
+
+### 1. Create Service Directory
+
+```bash
+mkdir -p openapi-specs/github
+```
+
+### 2. Add OpenAPI Spec (JSON)
+
+```bash
+# Download or copy your OpenAPI spec
+cp ~/github-api.json openapi-specs/github/github.json
+```
+
+### 3. Create `apiful.config.ts`
 
 ```typescript
-import { createClient, hydra } from 'toonfetch/ory'
+// openapi-specs/github/apiful.config.ts
+import { defineConfig } from 'apiful'
+
+export default defineConfig({
+  openapis: {
+    github: {                    // Must match filename
+      filepath: './github.json'
+    }
+  },
+  output: './types.d.ts'
+})
+```
+
+### 4. Create `index.ts`
+
+```typescript
+// openapi-specs/github/index.ts
+import { createClient as apifulCreateClient, OpenAPIBuilder } from 'apiful'
+
+export { apifulCreateClient as createClient }
+export const github = OpenAPIBuilder<'github'>()
+export default { github }
+```
+
+### 5. Build
+
+```bash
+pnpm build
+```
+
+This automatically:
+- ✅ Converts JSON to TOON (compressed)
+- ✅ Generates TypeScript types
+- ✅ Updates package.json exports
+- ✅ Bundles to `dist/github.js`
+- ✅ Makes it available in MCP server
+
+### 6. Use It
+
+```typescript
+import { createClient, github } from 'toonfetch/github'
+
+const client = createClient({
+  baseURL: 'https://api.github.com',
+  headers: { 'Authorization': 'token ghp_...' }
+}).with(github)
+
+// Fully typed!
+const user = await client('/users/{username}', {
+  method: 'GET',
+  path: { username: 'octocat' }
+})
 ```
 
 ## Development
 
-### Prerequisites
-
-- Node.js 18+ (20+ recommended)
-- pnpm 9.15+
-
 ### Setup
 
 ```bash
-# Install dependencies
+# Install
 pnpm install
 
-# Build the project
+# Build
 pnpm build
 
-# Run type checking
-pnpm test:types
+# Test
+pnpm test
 
-# Run linter
-pnpm lint
+# Test with coverage
+pnpm test:coverage
 
-# Fix linting issues
+# Lint
 pnpm lint:fix
 ```
 
-### Build Pipeline
+### Scripts
 
-The build process runs these steps in order:
+| Script | Description |
+|--------|-------------|
+| `pnpm build` | Full build pipeline |
+| `pnpm convert:toon` | Convert JSON to TOON |
+| `pnpm generate:types` | Generate TypeScript types |
+| `pnpm test` | Run all tests |
+| `pnpm test:watch` | Run tests in watch mode |
+| `pnpm lint` | Run ESLint |
 
-1. **`convert:toon`** - Convert JSON specs to TOON format
-2. **`update:exports`** - Auto-update package.json exports
-3. **`tsdown`** - Bundle TypeScript and generate declarations
-4. **`copy:types`** - Copy type definitions to dist/
-5. **`add:refs`** - Add type references to compiled files
-
-```bash
-pnpm build              # Run full pipeline
-pnpm convert:toon       # Only convert to TOON
-pnpm generate:types     # Only generate types
-```
-
-### Testing
-
-```bash
-# Run all tests
-pnpm test
-
-# Run tests in watch mode
-pnpm test:watch
-
-# Run tests with coverage
-pnpm test:coverage
-```
-
-### Local Development
-
-The `playground/` directory contains examples for testing:
-
-```bash
-cd playground
-tsx index.ts
-```
-
-## Project Structure
+### Project Structure
 
 ```
 toonfetch/
-├── src/
-│   └── mcp-server.ts          # MCP server implementation
-├── scripts/
-│   ├── convert-to-toon.ts     # TOON conversion script
-│   ├── generate-types.ts      # Type generation script
-│   └── ...                    # Other build scripts
-├── openapi-specs/
+├── src/mcp-server.ts           # MCP server
+├── scripts/                     # Build scripts
+├── openapi-specs/              # API specifications
 │   └── ory/
-│       ├── kratos.json        # Ory Kratos OpenAPI spec
-│       ├── kratos.toon        # Compressed TOON version
-│       ├── hydra.json         # Ory Hydra OpenAPI spec
-│       ├── hydra.toon         # Compressed TOON version
-│       ├── apiful.config.ts   # Type generation config
-│       └── index.ts           # Client exports
-├── playground/
-│   └── index.ts               # Usage examples
-└── dist/                      # Compiled output
+│       ├── kratos.json         # OpenAPI spec
+│       ├── kratos.toon         # Compressed TOON
+│       ├── apiful.config.ts    # Type config
+│       ├── index.ts            # Client exports
+│       └── types.d.ts          # Generated types
+├── test/                       # Tests (76+)
+├── playground/                 # Examples
+└── dist/                       # Compiled output
+    ├── ory.js                  # Bundled client
+    ├── ory.d.ts                # Type definitions
+    └── mcp-server.js           # MCP executable
 ```
 
-## Adding New APIs
+## Troubleshooting
 
-1. Create a directory in `openapi-specs/{service-name}/`
-2. Add your OpenAPI JSON specifications
-3. Create `apiful.config.ts` and `index.ts` (use `ory/` as template)
-4. Run `pnpm build`
+### MCP Server Not Showing
 
-The build system will automatically:
-- Convert JSON to TOON format
-- Generate TypeScript types
-- Update package.json exports
-- Bundle for distribution
+**Check Config File:**
+```bash
+# macOS
+cat ~/Library/Application\ Support/Claude/claude_desktop_config.json
+
+# Validate JSON
+node -e "JSON.parse(require('fs').readFileSync('path/to/config.json'))"
+```
+
+**Check MCP Server:**
+```bash
+# Global install
+toonfetch-mcp
+# Should output: "ToonFetch MCP server running on stdio"
+
+# Local build
+node /path/to/dist/mcp-server.js
+```
+
+**Check Claude Logs:**
+```bash
+# macOS
+tail -f ~/Library/Logs/Claude/mcp*.log
+
+# Windows
+# Check %APPDATA%\Claude\Logs\
+```
+
+### Types Not Generated
+
+```bash
+# Manually generate
+pnpm generate:types
+
+# Check output
+ls openapi-specs/*/types.d.ts
+```
+
+### Build Fails
+
+```bash
+# Clean install
+rm -rf node_modules pnpm-lock.yaml dist
+pnpm install
+pnpm build
+```
+
+### Still Having Issues?
+
+1. Check [CLAUDE.md](./CLAUDE.md) - Detailed docs
+2. Search [issues](https://github.com/productdevbook/toonfetch/issues)
+3. Create [new issue](https://github.com/productdevbook/toonfetch/issues/new) with:
+   - Node version (`node --version`)
+   - OS
+   - Error message
 
 ## Why TOON Format?
 
-TOON (Tree Object Oriented Notation) compresses OpenAPI specs by ~40-45%:
+TOON compresses OpenAPI specs by ~40-45%:
 
-- **Ory Kratos:** ~134k tokens (JSON) → ~73k tokens (TOON) = 45.2% savings
-- **Ory Hydra:** ~69k tokens (JSON) → ~40k tokens (TOON) = 42.0% savings
+| Spec | JSON | TOON | Savings |
+|------|------|------|---------|
+| Ory Kratos | 134k tokens | 73k tokens | **45%** |
+| Ory Hydra | 69k tokens | 40k tokens | **42%** |
 
-This matters for:
-- MCP server context windows
-- Embedding specs in AI prompts
-- Faster spec loading and parsing
+**Benefits:**
+- Fits more APIs in Claude's context
+- Faster loading
+- Lower token costs
 
-## Documentation
-
-For detailed documentation, see:
-- [CLAUDE.md](./CLAUDE.md) - Comprehensive project documentation
-- [Ory Kratos API Docs](https://www.ory.sh/docs/kratos)
-- [Ory Hydra API Docs](https://www.ory.sh/docs/hydra)
-- [MCP Protocol Specification](https://modelcontextprotocol.io/)
+Learn more: [TOON Format](https://github.com/toon-format/toon)
 
 ## Contributing
 
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with tests
-4. Run `pnpm lint:fix` and `pnpm test`
-5. Submit a pull request
+We welcome contributions! See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
+
+Quick start:
+
+```bash
+# Fork and clone
+git clone https://github.com/productdevbook/toonfetch.git
+cd toonfetch
+
+# Create branch
+git checkout -b feature/my-feature
+
+# Make changes, add tests
+pnpm test
+
+# Lint
+pnpm lint:fix
+
+# Commit
+git commit -m "feat: add my feature"
+git push origin feature/my-feature
+```
+
+## Documentation
+
+- [CLAUDE.md](./CLAUDE.md) - Comprehensive project docs
+- [CONTRIBUTING.md](./CONTRIBUTING.md) - Contribution guide
+- [test/README.md](./test/README.md) - Testing guide
+- [Model Context Protocol](https://modelcontextprotocol.io/) - MCP specification
 
 ## License
 
@@ -249,6 +482,10 @@ MIT © 2025
 ## Acknowledgments
 
 - [apiful](https://github.com/lisnote/apiful) - Type-safe OpenAPI client generator
-- [TOON Format](https://github.com/toon-format/toon) - Efficient spec compression
+- [TOON Format](https://github.com/toon-format/toon) - Spec compression
 - [Ory](https://www.ory.sh/) - Open source identity infrastructure
-- [Model Context Protocol](https://modelcontextprotocol.io/) - AI assistant integration standard
+- [Model Context Protocol](https://modelcontextprotocol.io/) - AI integration standard
+
+---
+
+**Made with ❤️ for developers**
