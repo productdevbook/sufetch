@@ -59,12 +59,13 @@ jobs:
       - name: 👀 Lint
         run: pnpm lint
 
-      - name: 🧪 Test
-        run: pnpm test
-
-      # Build includes type checking via tsdown
+      # Build first (integration tests need dist/ folder)
       - name: 🚀 Build
         run: pnpm build
+
+      # Test after build (integration tests verify build output)
+      - name: 🧪 Test
+        run: pnpm test
 
       - name: 📤 Upload artifacts
         uses: actions/upload-artifact@v4
