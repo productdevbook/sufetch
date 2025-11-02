@@ -121,11 +121,23 @@ ToonFetch currently includes:
 
 ## MCP Server Setup
 
-The MCP server lets AI assistants (like Claude Desktop) explore your APIs and generate code examples.
+The MCP server lets AI assistants (like Claude Desktop and Claude Code CLI) explore your APIs and generate code examples.
+
+### Quick Reference
+
+| Client | Config Location | Setup Command |
+|--------|----------------|---------------|
+| **Claude Desktop** | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)<br>`%APPDATA%\Claude\claude_desktop_config.json` (Windows) | Manual JSON edit |
+| **Claude Code CLI** | `.mcp.json` in project root | `claude mcp add --transport stdio --scope project toonfetch -- toonfetch-mcp` |
 
 ### Prerequisites
 
-- [Claude Desktop](https://claude.ai/download) (or another MCP client)
+Choose one:
+- [Claude Desktop](https://claude.ai/download) - GUI application
+- [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) - Command line interface
+- Or any other MCP-compatible client
+
+Requirements:
 - Node.js 18+
 
 ### Step 1: Install
@@ -150,7 +162,7 @@ cd toonfetch
 pnpm install && pnpm build
 ```
 
-### Step 2: Configure Claude Desktop
+### Step 2A: Configure for Claude Desktop
 
 #### Find the Config File
 
@@ -183,7 +195,7 @@ If the file doesn't exist, create it.
   "mcpServers": {
     "toonfetch": {
       "command": "npx",
-      "args": ["-y", "toonfetch"]
+      "args": ["-y", "toonfetch-mcp"]
     }
   }
 }
@@ -212,7 +224,77 @@ cd /path/to/toonfetch && echo "$(pwd)/dist/mcp-server.js"
 cd C:\path\to\toonfetch; "$(Get-Location)\dist\mcp-server.js"
 ```
 
-### Step 3: Restart Claude Desktop
+### Step 2B: Configure for Claude Code CLI
+
+Claude Code uses project-scoped MCP servers via `.mcp.json` file in your project root.
+
+#### Option 1: Using CLI (Recommended)
+
+**For Global Install:**
+
+```bash
+claude mcp add --transport stdio --scope project toonfetch -- toonfetch-mcp
+```
+
+**For npx (no install):**
+
+```bash
+claude mcp add --transport stdio --scope project toonfetch -- npx -y toonfetch-mcp
+```
+
+#### Option 2: Manual Configuration
+
+Create `.mcp.json` in your project root:
+
+**For Global Install:**
+
+```json
+{
+  "mcpServers": {
+    "toonfetch": {
+      "command": "toonfetch-mcp"
+    }
+  }
+}
+```
+
+**For npx:**
+
+```json
+{
+  "mcpServers": {
+    "toonfetch": {
+      "command": "npx",
+      "args": ["-y", "toonfetch-mcp"]
+    }
+  }
+}
+```
+
+**For Local Development:**
+
+```json
+{
+  "mcpServers": {
+    "toonfetch": {
+      "command": "node",
+      "args": ["./dist/mcp-server.js"]
+    }
+  }
+}
+```
+
+#### Verify Configuration
+
+```bash
+# Check MCP status
+claude mcp list
+
+# Or use the /mcp command in Claude Code
+/mcp
+```
+
+### Step 3: Restart Claude Desktop (Desktop Only)
 
 1. Quit Claude Desktop completely
 2. Reopen it
@@ -220,13 +302,25 @@ cd C:\path\to\toonfetch; "$(Get-Location)\dist\mcp-server.js"
 
 ### Step 4: Test It
 
-In Claude Desktop, type:
+**In Claude Desktop:**
 
 ```
 List available APIs using toonfetch
 ```
 
+**In Claude Code CLI:**
+
+```bash
+# Start a conversation
+claude
+
+# Then ask:
+List available APIs using toonfetch
+```
+
 Claude should show you the available APIs (Ory Kratos, Ory Hydra, etc.).
+
+> **Note:** Claude Code will prompt for approval before using project-scoped MCP servers. Click "Allow" when prompted.
 
 ### Available MCP Tools
 
@@ -371,13 +465,28 @@ toonfetch/
 
 ### MCP Server Not Showing
 
-**Check Config File:**
+**For Claude Desktop - Check Config File:**
 ```bash
 # macOS
 cat ~/Library/Application\ Support/Claude/claude_desktop_config.json
 
+# Windows
+type %APPDATA%\Claude\claude_desktop_config.json
+
 # Validate JSON
 node -e "JSON.parse(require('fs').readFileSync('path/to/config.json'))"
+```
+
+**For Claude Code - Check Project Config:**
+```bash
+# Check .mcp.json exists
+cat .mcp.json
+
+# List configured servers
+claude mcp list
+
+# Check status in Claude Code
+# Run: /mcp
 ```
 
 **Check MCP Server:**

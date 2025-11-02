@@ -3,4 +3,5 @@ node_modules
 .DS_Store
 .env
 mcp-config.json
+.mcp.json
 test-mcp.sh
