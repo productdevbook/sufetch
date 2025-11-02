@@ -120,7 +120,8 @@ class ToonFetchMCPServer {
 
             try {
               const toonContent = readFileSync(fullPath, 'utf-8')
-              const spec = decode(toonContent)
+              // Use strict: false to allow flexible array counts in OpenAPI specs
+              const spec = decode(toonContent, { strict: false })
 
               this.specs.set(key, {
                 name: key,
@@ -679,8 +680,12 @@ ${examples}
     // Generate code example
     const codeExample = this.generateCodeExample(args.api_name, args.path, args.method, operation)
 
+    // Filter out x-codeSamples and x-code-samples to prevent SDK confusion
+    // These contain SDK-specific examples that don't apply to the raw REST API
+    const { 'x-codeSamples': _xCodeSamples, 'x-code-samples': _xCodeSamplesAlt, ...cleanOperation } = operation
+
     const result = {
-      endpoint: operation,
+      endpoint: cleanOperation,
       usage_example: {
         description: 'Copy-paste ready code example using toonfetch library',
         code: codeExample.fullExample,

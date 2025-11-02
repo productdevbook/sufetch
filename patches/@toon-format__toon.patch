@@ -1,0 +1,32 @@
+diff --git a/dist/index.js b/dist/index.js
+index f5148ebf7dad8fcb9043d19f360b5379bbbe76d1..978e381833b5cc7c4c788ba99b87a704fe73f109 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -151,8 +151,15 @@ function isNumericLiteral(token) {
+ //#endregion
+ //#region src/decode/parser.ts
+ function parseArrayHeaderLine(content, defaultDelimiter) {
+-	if (content.trimStart().startsWith(DOUBLE_QUOTE)) return;
+-	const bracketStart = content.indexOf(OPEN_BRACKET);
++	let bracketStart = -1;
++	let keyEndIndex = 0;
++	const trimmed = content.trimStart();
++	if (trimmed.startsWith(DOUBLE_QUOTE)) {
++		const closingQuote = findClosingQuote(trimmed, 0);
++		if (closingQuote === -1) return;
++		keyEndIndex = content.indexOf(trimmed) + closingQuote + 1;
++		bracketStart = content.indexOf(OPEN_BRACKET, keyEndIndex);
++	} else bracketStart = content.indexOf(OPEN_BRACKET);
+ 	if (bracketStart === -1) return;
+ 	const bracketEnd = content.indexOf(CLOSE_BRACKET, bracketStart);
+ 	if (bracketEnd === -1) return;
+@@ -165,7 +172,8 @@ function parseArrayHeaderLine(content, defaultDelimiter) {
+ 	}
+ 	colonIndex = content.indexOf(COLON, Math.max(bracketEnd, braceEnd));
+ 	if (colonIndex === -1) return;
+-	const key = bracketStart > 0 ? content.slice(0, bracketStart) : void 0;
++	let key = bracketStart > 0 ? content.slice(0, bracketStart).trim() : void 0;
++	if (key && key.startsWith(DOUBLE_QUOTE) && key.endsWith(DOUBLE_QUOTE)) key = unescapeString(key.slice(1, -1));
+ 	const afterColon = content.slice(colonIndex + 1).trim();
+ 	const bracketContent = content.slice(bracketStart + 1, bracketEnd);
+ 	let parsedBracket;
