@@ -408,6 +408,162 @@ class ToonFetchMCPServer {
   }
 
   /**
+   * Analyze the response structure to extract useful information for code generation.
+   *
+   * Detects success status code, wrapper objects, primary resource, and important fields
+   * to generate intuitive response access patterns in code examples.
+   *
+   * @param operation - OpenAPI operation object
+   * @param spec - Complete OpenAPI specification object
+   * @returns Response structure information or null if no response schema found
+   * @private
+   */
+  private analyzeResponseStructure(operation: any, spec: any): {
+    statusCode: number
+    schema: any
+    wrapperKeys: string[]
+    primaryResource: string | null
+    importantFields: string[]
+    isArray: boolean
+    hasActions: boolean
+  } | null {
+    if (!operation.responses) {
+      return null
+    }
+
+    // Determine success status code (prefer 200, then 201, 202, 204)
+    const successStatuses = [200, 201, 202, 204]
+    let statusCode: number | null = null
+    let responseObj: any = null
+
+    for (const status of successStatuses) {
+      if (operation.responses[status]) {
+        statusCode = status
+        responseObj = operation.responses[status]
+        break
+      }
+    }
+
+    if (!statusCode || !responseObj) {
+      return null
+    }
+
+    // Extract response schema
+    const content = responseObj.content?.['application/json']
+    if (!content?.schema) {
+      return null
+    }
+
+    let schema = content.schema
+
+    // Resolve $ref if present
+    if (schema.$ref) {
+      schema = this.resolveRef(schema.$ref, spec)
+      if (!schema) {
+        return null
+      }
+    }
+
+    // Handle oneOf/anyOf - use first option (usually the primary variant)
+    if (schema.oneOf && schema.oneOf.length > 0) {
+      let firstOption = schema.oneOf[0]
+      if (firstOption.$ref) {
+        firstOption = this.resolveRef(firstOption.$ref, spec)
+      }
+      if (firstOption) {
+        schema = firstOption
+      }
+    }
+    else if (schema.anyOf && schema.anyOf.length > 0) {
+      let firstOption = schema.anyOf[0]
+      if (firstOption.$ref) {
+        firstOption = this.resolveRef(firstOption.$ref, spec)
+      }
+      if (firstOption) {
+        schema = firstOption
+      }
+    }
+
+    // Detect if response is an array
+    const isArray = schema.type === 'array'
+    let propertiesSchema = isArray && schema.items ? schema.items : schema
+
+    // Resolve items $ref for arrays
+    if (propertiesSchema.$ref) {
+      propertiesSchema = this.resolveRef(propertiesSchema.$ref, spec)
+    }
+
+    // Extract wrapper keys (top-level properties that might contain resources)
+    const wrapperKeys: string[] = []
+    let primaryResource: string | null = null
+    const importantFields: string[] = []
+    let hasActions = false
+
+    if (propertiesSchema?.properties && typeof propertiesSchema.properties === 'object') {
+      const properties = propertiesSchema.properties
+
+      // Common resource wrapper names (DigitalOcean, Hetzner patterns)
+      const resourcePatterns = ['server', 'droplet', 'image', 'volume', 'snapshot', 'firewall', 'load_balancer', 'certificate', 'database', 'identity', 'client', 'token', 'session', 'action', 'network', 'ssh_key', 'domain', 'project']
+
+      for (const key of Object.keys(properties)) {
+        wrapperKeys.push(key)
+
+        // Detect primary resource (object with nested properties)
+        const prop = properties[key]
+        const resolvedProp = prop.$ref ? this.resolveRef(prop.$ref, spec) : prop
+
+        if (!primaryResource && resolvedProp?.type === 'object' && resourcePatterns.includes(key)) {
+          primaryResource = key
+        }
+
+        // Detect actions (common in async APIs like Hetzner)
+        if (key === 'action' || key === 'next_actions') {
+          hasActions = true
+        }
+      }
+
+      // If no resource pattern matched, use the first object property as primary
+      if (!primaryResource && wrapperKeys.length > 0) {
+        for (const key of wrapperKeys) {
+          const prop = properties[key]
+          const resolvedProp = prop.$ref ? this.resolveRef(prop.$ref, spec) : prop
+
+          if (resolvedProp?.type === 'object' && key !== 'links' && key !== 'meta' && key !== 'metadata') {
+            primaryResource = key
+            break
+          }
+        }
+      }
+
+      // Extract important fields from primary resource
+      if (primaryResource) {
+        const resourceProp = properties[primaryResource]
+        const resolvedResource = resourceProp.$ref ? this.resolveRef(resourceProp.$ref, spec) : resourceProp
+
+        if (resolvedResource?.properties) {
+          const importantFieldNames = ['id', 'name', 'status', 'state', 'created', 'created_at', 'updated_at', 'ip', 'ip_address', 'email']
+
+          for (const fieldName of importantFieldNames) {
+            if (resolvedResource.properties[fieldName]) {
+              importantFields.push(fieldName)
+            }
+          }
+        }
+      }
+    }
+
+    return {
+      statusCode,
+      schema,
+      wrapperKeys,
+      primaryResource,
+      importantFields,
+      isArray,
+      hasActions,
+    }
+  }
+
+  /**
    * Generate a complete TypeScript code example for an API endpoint.
    *
    * Creates copy-paste-ready code including imports, client setup, and request execution.
@@ -443,6 +599,9 @@ class ToonFetchMCPServer {
 
     // Get type helper name for type-safe code generation
     const typeHelperName = this.getTypeHelperName(apiName)
+
+    // Analyze response structure for intuitive code generation
+    const responseStructure = this.analyzeResponseStructure(operation, spec)
 
     // Generate imports
     let imports = `import { createClient, ${serviceName} } from 'toonfetch/${apiName.split('/')[0]}'`
@@ -505,16 +664,44 @@ class ToonFetchMCPServer {
       }
     }
 
-    // Process request body
+    // Process request body and extract required fields info
+    let requestBodySchema: any = null
+    let requiredFields: string[] = []
+    let isRequestBodyRequired = false
+
     if (operation.requestBody) {
       const content = operation.requestBody.content
       const jsonContent = content?.['application/json']
+      isRequestBodyRequired = operation.requestBody.required === true
+
       console.error(`[DEBUG] ${method} ${path} - requestBody exists:`, !!operation.requestBody)
       console.error(`[DEBUG] ${method} ${path} - content exists:`, !!content)
       console.error(`[DEBUG] ${method} ${path} - jsonContent exists:`, !!jsonContent)
       console.error(`[DEBUG] ${method} ${path} - schema exists:`, !!jsonContent?.schema)
+
       if (jsonContent?.schema) {
         console.error(`[DEBUG] ${method} ${path} - schema keys:`, Object.keys(jsonContent.schema))
+        requestBodySchema = jsonContent.schema
+
+        // Resolve $ref if present
+        const resolvedSchema = requestBodySchema.$ref
+          ? this.resolveRef(requestBodySchema.$ref, spec)
+          : requestBodySchema
+
+        // Extract required fields
+        if (resolvedSchema?.required && Array.isArray(resolvedSchema.required)) {
+          requiredFields = resolvedSchema.required
+        }
+        // Also check for allOf patterns that merge required fields
+        else if (resolvedSchema?.allOf) {
+          for (const subSchema of resolvedSchema.allOf) {
+            const resolved = subSchema.$ref ? this.resolveRef(subSchema.$ref, spec) : subSchema
+            if (resolved?.required && Array.isArray(resolved.required)) {
+              requiredFields.push(...resolved.required)
+            }
+          }
+        }
+
         requestBody = this.generateExampleValue(jsonContent.schema, undefined, spec)
         console.error(`[DEBUG] Generated requestBody for ${method} ${path}:`, requestBody !== undefined ? `${Object.keys(requestBody || {}).length} properties` : 'undefined')
       }
@@ -542,8 +729,14 @@ class ToonFetchMCPServer {
         typeDefs.push(`type PathParams = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['path']`)
       }
 
-      // Always add response type
-      typeDefs.push(`type Response = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['response']`)
+      // Add response type with actual status code
+      if (responseStructure) {
+        typeDefs.push(`type Response = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['responses'][${responseStructure.statusCode}]`)
+      }
+      else {
+        // Fallback to default response type if structure analysis failed
+        typeDefs.push(`type Response = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['response']`)
+      }
 
       if (typeDefs.length > 0) {
         typeDefinitions = `\n${typeDefs.join('\n')}\n`
@@ -554,10 +747,29 @@ class ToonFetchMCPServer {
     const variableDeclarations: string[] = []
 
     if (requestBody !== undefined) {
+      // Add helpful comment about required fields
+      let bodyComment = ''
+      if (requiredFields.length > 0) {
+        const allFields = Object.keys(requestBody)
+        const optionalFields = allFields.filter(f => !requiredFields.includes(f))
+
+        bodyComment = '// Request body'
+        if (isRequestBodyRequired) {
+          bodyComment += ' (required)'
+        }
+        bodyComment += '\n'
+        if (requiredFields.length > 0) {
+          bodyComment += `// Required fields: ${requiredFields.join(', ')}\n`
+        }
+        if (optionalFields.length > 0) {
+          bodyComment += `// Optional fields: ${optionalFields.join(', ')}\n`
+        }
+      }
+
       const bodyJson = JSON.stringify(requestBody, null, 2)
       const typedBody = typeHelperName
-        ? `const body: RequestBody = ${bodyJson}`
-        : `const body = ${bodyJson}`
+        ? `${bodyComment}const body: RequestBody = ${bodyJson}`
+        : `${bodyComment}const body = ${bodyJson}`
       variableDeclarations.push(typedBody)
     }
 
@@ -598,9 +810,58 @@ class ToonFetchMCPServer {
 
     // Generate the API call
     const responseType = typeHelperName ? ': Response' : ''
-    const usage = `const response${responseType} = await client('${path}', {
+    let usage = `const response${responseType} = await client('${path}', {
 ${requestOptions.join(',\n')}
 })`
+
+    // Generate intuitive response access examples
+    if (responseStructure) {
+      const { statusCode, primaryResource, importantFields, hasActions, isArray, wrapperKeys } = responseStructure
+
+      // Add status code comment
+      const statusMessage = statusCode === 200
+        ? 'OK'
+        : statusCode === 201
+          ? 'Created'
+          : statusCode === 202
+            ? 'Accepted'
+            : statusCode === 204
+              ? 'No Content'
+              : 'Success'
+
+      usage += `\n\n// Response status: ${statusCode} ${statusMessage}`
+
+      // Add primary resource access examples
+      if (primaryResource && importantFields.length > 0) {
+        const resourceName = primaryResource.charAt(0).toUpperCase() + primaryResource.slice(1).replace(/_/g, ' ')
+        usage += `\n// Access the ${resourceName.toLowerCase()}`
+
+        for (const field of importantFields) {
+          const accessor = isArray ? `response.${wrapperKeys[0]}[0].${field}` : `response.${primaryResource}.${field}`
+          const fieldLabel = field.replace(/_/g, ' ')
+          usage += `\nconsole.log('${fieldLabel}:', ${accessor})`
+        }
+      }
+      else if (primaryResource) {
+        // Primary resource exists but no important fields detected
+        const accessor = isArray ? `response.${wrapperKeys[0]}[0]` : `response.${primaryResource}`
+        usage += `\nconsole.log('${primaryResource}:', ${accessor})`
+      }
+      else if (wrapperKeys.length > 0 && !isArray) {
+        // No primary resource, but we have wrapper keys - show access for first non-metadata key
+        const firstKey = wrapperKeys.find(k => k !== 'links' && k !== 'meta' && k !== 'metadata')
+        if (firstKey) {
+          usage += `\nconsole.log('${firstKey}:', response.${firstKey})`
+        }
+      }
+
+      // Add action polling guidance for async operations
+      if (hasActions) {
+        usage += `\n\n// The operation is asynchronous - poll the action status`
+        usage += `\nconst actionId = response.action.id`
+        usage += `\n// Poll GET /actions/{id} endpoint until status === 'success'`
+      }
+    }
 
     // Generate authentication comment
     let authComment = ''
