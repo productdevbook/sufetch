@@ -1,5 +1,6 @@
-import { readdirSync, statSync } from 'node:fs'
+/* eslint-disable node/prefer-global/process */
 import { execSync } from 'node:child_process'
+import { readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
 /**
@@ -51,7 +52,7 @@ for (const jsonPath of jsonFiles) {
     // Extract token savings from output
     const match = output.match(/Saved ~(\d+) tokens/)
     if (match) {
-      const saved = Number.parseInt(match[1], 10)
+      const saved = Number.parseInt(match[1] ?? '0', 10)
       totalSaved += saved
       console.log(`  ${output.split('\n').filter((l: string) => l.includes('Token')).join('\n  ')}`)
     }
