@@ -3,11 +3,23 @@
   "type": "module",
   "version": "0.0.1",
   "private": false,
-  "files": [],
+  "files": [
+    "dist"
+  ],
   "packageManager": "pnpm@10.20.0",
+  "exports": {
+    "./ory": {
+      "types": "./dist/ory.d.ts",
+      "import": "./dist/ory.js"
+    }
+  },
   "scripts": {
-    "build": "pnpm -r --filter=./packages/** run build",
+    "build": "pnpm update:exports && tsdown && pnpm copy:types && pnpm add:refs",
     "automd": "automd",
+    "generate:types": "tsx scripts/generate-types.ts",
+    "update:exports": "tsx scripts/update-exports.ts",
+    "copy:types": "tsx scripts/copy-types.ts",
+    "add:refs": "tsx scripts/add-type-references.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test": "pnpm -r test",
@@ -20,9 +32,13 @@
     "automd": "^0.4.2",
     "bumpp": "^10.3.1",
     "eslint": "^9.39.0",
+    "openapi-typescript": "^7.10.1",
     "tsdown": "^0.15.12",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vitest": "^4.0.6"
+  },
+  "dependencies": {
+    "apiful": "^4.0.0"
   }
 }

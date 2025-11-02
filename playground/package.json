@@ -1,0 +1,16 @@
+{
+  "name": "playground",
+  "type": "module",
+  "packageManager": "pnpm@10.20.0",
+  "scripts": {
+    "dev": "tsx index.ts",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "toonfetch": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

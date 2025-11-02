@@ -1,0 +1,22 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      toonfetch:
+        specifier: ^0.0.1
+        version: 0.0.1
+
+packages:
+
+  toonfetch@0.0.1:
+    resolution: {integrity: sha512-+vNr6oCHb0Y/PQIJVh+saLQWVTQ19Vcqa6R9Eo8FNDjt4DELTqonPkJrgesqFs0vld7n4meJBhGCHqVsDisLRg==}
+
+snapshots:
+
+  toonfetch@0.0.1: {}
