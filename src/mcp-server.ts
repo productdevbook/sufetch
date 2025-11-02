@@ -307,6 +307,33 @@ class ToonFetchMCPServer {
   }
 
   /**
+   * Get the type helper name for an API service.
+   *
+   * Maps API names to their TypeScript type helper names for use in
+   * generated code examples with type safety.
+   *
+   * @param apiName - Full API identifier (e.g., "digitalocean/api", "hetzner/cloud")
+   * @returns Type helper name or null if not available
+   * @private
+   *
+   * @example
+   * ```typescript
+   * getTypeHelperName("digitalocean/api")  // Returns "DigitalOcean"
+   * getTypeHelperName("hetzner/cloud")     // Returns "HetznerCloud"
+   * getTypeHelperName("ory/kratos")        // Returns "OryKaratos"
+   * ```
+   */
+  private getTypeHelperName(apiName: string): string | null {
+    const mapping: Record<string, string> = {
+      'digitalocean/api': 'DigitalOcean',
+      'hetzner/cloud': 'HetznerCloud',
+      'ory/kratos': 'OryKaratos',
+      'ory/hydra': 'OryHydra',
+    }
+    return mapping[apiName] || null
+  }
+
+  /**
    * Generate a complete TypeScript code example for an API endpoint.
    *
    * Creates copy-paste-ready code including imports, client setup, and request execution.
@@ -340,8 +367,16 @@ class ToonFetchMCPServer {
     // Extract authentication information
     const authInfo = this.extractAuthInfo(spec, operation, apiName)
 
+    // Get type helper name for type-safe code generation
+    const typeHelperName = this.getTypeHelperName(apiName)
+
     // Generate imports
-    const imports = `import { createClient, ${serviceName} } from 'toonfetch/${apiName.split('/')[0]}'`
+    let imports = `import { createClient, ${serviceName} } from 'toonfetch/${apiName.split('/')[0]}'`
+
+    // Add type import for type-safe examples
+    if (typeHelperName) {
+      imports += `\nimport type { ${typeHelperName} } from 'toonfetch/${apiName.split('/')[0]}'`
+    }
 
     // Generate client setup
     const baseUrlExample = apiName.includes('kratos')
@@ -405,52 +440,103 @@ class ToonFetchMCPServer {
       }
     }
 
-    // Build the request options object
-    const options: string[] = [`  method: '${methodUpper}'`]
+    // Generate type definitions if type helper is available
+    let typeDefinitions = ''
+    let typedVariables = ''
 
-    if (Object.keys(pathParams).length > 0) {
-      options.push(`  path: ${JSON.stringify(pathParams, null, 2).split('\n').join('\n  ')}`)
+    if (typeHelperName) {
+      const typeDefs: string[] = []
+
+      // Add request body type if exists
+      if (requestBody !== undefined) {
+        typeDefs.push(`type RequestBody = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['request']`)
+      }
+
+      // Add query params type if exists
+      if (Object.keys(queryParams).length > 0) {
+        typeDefs.push(`type QueryParams = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['query']`)
+      }
+
+      // Add path params type if exists
+      if (Object.keys(pathParams).length > 0) {
+        typeDefs.push(`type PathParams = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['path']`)
+      }
+
+      // Always add response type
+      typeDefs.push(`type Response = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['response']`)
+
+      if (typeDefs.length > 0) {
+        typeDefinitions = `\n${typeDefs.join('\n')}\n`
+      }
+    }
+
+    // Generate typed variables
+    const variableDeclarations: string[] = []
+
+    if (requestBody !== undefined) {
+      const bodyJson = JSON.stringify(requestBody, null, 2)
+      const typedBody = typeHelperName
+        ? `const body: RequestBody = ${bodyJson}`
+        : `const body = ${bodyJson}`
+      variableDeclarations.push(typedBody)
     }
 
     if (Object.keys(queryParams).length > 0) {
-      options.push(`  query: ${JSON.stringify(queryParams, null, 2).split('\n').join('\n  ')}`)
+      const queryJson = JSON.stringify(queryParams, null, 2)
+      const typedQuery = typeHelperName
+        ? `const query: QueryParams = ${queryJson}`
+        : `const query = ${queryJson}`
+      variableDeclarations.push(typedQuery)
+    }
+
+    if (Object.keys(pathParams).length > 0) {
+      const pathJson = JSON.stringify(pathParams, null, 2)
+      const typedPath = typeHelperName
+        ? `const pathParams: PathParams = ${pathJson}`
+        : `const pathParams = ${pathJson}`
+      variableDeclarations.push(typedPath)
+    }
+
+    if (variableDeclarations.length > 0) {
+      typedVariables = `\n${variableDeclarations.join('\n\n')}\n`
+    }
+
+    // Build request options
+    const requestOptions: string[] = [`  method: '${methodUpper}'`]
+
+    if (Object.keys(pathParams).length > 0) {
+      requestOptions.push('  path: pathParams')
+    }
+
+    if (Object.keys(queryParams).length > 0) {
+      requestOptions.push('  query')
     }
 
     if (requestBody !== undefined) {
-      options.push(`  body: ${JSON.stringify(requestBody, null, 2).split('\n').join('\n  ')}`)
+      requestOptions.push('  body')
     }
 
-    // Generate usage
-    const usage = `const response = await client('${path}', {
-${options.join(',\n')}
+    // Generate the API call
+    const responseType = typeHelperName ? ': Response' : ''
+    const usage = `const response${responseType} = await client('${path}', {
+${requestOptions.join(',\n')}
 })`
 
     // Generate authentication comment
     let authComment = ''
     if (authInfo.type && authInfo.envVarName) {
-      authComment = `// Authentication required: Set your API token as an environment variable
+      authComment = `// Authentication: Set your API token
 // export ${authInfo.envVarName}='your-token-here'
-// or for quick testing: headers: { 'Authorization': 'Bearer your-token-here' }
 
 `
     }
 
-    // Generate full example
+    // Generate full example (clean, modern style)
     const fullExample = `${imports}
-
-${authComment}// Initialize the client
-${setup}
-
-// Make the request
-async function ${operation.operationId || 'makeRequest'}() {
-  ${usage}
-
-  console.log('Response:', response)
-  return response
-}
-
-// Call the function
-${operation.operationId || 'makeRequest'}().catch(console.error)`
+${typeDefinitions}
+${authComment}${setup}
+${typedVariables}
+${usage}`
 
     return {
       imports,
