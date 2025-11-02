@@ -181,21 +181,95 @@ class ToonFetchMCPServer {
    * generateExampleValue({ type: 'boolean' }) // true
    * ```
    */
-  private generateExampleValue(schema: any, propertyName?: string): any {
-    if (!schema)
+  /**
+   * Resolve a JSON reference ($ref) in an OpenAPI spec.
+   *
+   * @param ref - Reference string (e.g., "#/components/schemas/User")
+   * @param spec - Complete OpenAPI specification object
+   * @returns Resolved schema object or undefined
+   * @private
+   */
+  private resolveRef(ref: string, spec: any): any {
+    if (!ref || !ref.startsWith('#/')) {
+      console.error('[resolveRef] Invalid ref:', ref)
       return undefined
+    }
+
+    const path = ref.substring(2).split('/')
+    console.error('[resolveRef] Path segments:', path)
+    let current = spec
+
+    for (const segment of path) {
+      if (!current || typeof current !== 'object') {
+        console.error('[resolveRef] Failed at segment:', segment, 'current type:', typeof current)
+        return undefined
+      }
+      current = current[segment]
+      console.error('[resolveRef] After segment', segment, ':', current ? 'exists' : 'undefined')
+    }
+
+    console.error('[resolveRef] Final result:', current ? 'exists' : 'undefined', '- has allOf:', !!current?.allOf)
+    return current
+  }
+
+  private generateExampleValue(schema: any, propertyName?: string, spec?: any): any {
+    if (!schema) {
+      console.error('[generateExampleValue] Schema is null/undefined')
+      return undefined
+    }
 
     // If there's an example, use it
     if (schema.example !== undefined)
       return schema.example
 
-    // Handle references
-    if (schema.$ref)
-      return `/* Reference to ${schema.$ref} */`
+    // Handle references - resolve and recurse
+    if (schema.$ref && spec) {
+      console.error('[generateExampleValue] Resolving $ref:', schema.$ref)
+      const resolved = this.resolveRef(schema.$ref, spec)
+      if (resolved)
+        return this.generateExampleValue(resolved, propertyName, spec)
+    }
+
+    // Handle oneOf/anyOf - use first option
+    if (schema.oneOf && schema.oneOf.length > 0) {
+      console.error('[generateExampleValue] Found oneOf with', schema.oneOf.length, 'options')
+      console.error('[generateExampleValue] First oneOf option:', JSON.stringify(schema.oneOf[0]).substring(0, 200))
+      const result = this.generateExampleValue(schema.oneOf[0], propertyName, spec)
+      console.error('[generateExampleValue] oneOf result:', result !== undefined ? 'has value' : 'undefined')
+      return result
+    }
+    if (schema.anyOf && schema.anyOf.length > 0) {
+      return this.generateExampleValue(schema.anyOf[0], propertyName, spec)
+    }
+
+    // Handle allOf - merge all properties from all schemas
+    if (schema.allOf && schema.allOf.length > 0) {
+      const mergedProperties: any = {}
+
+      for (const subSchema of schema.allOf) {
+        const resolved = subSchema.$ref ? this.resolveRef(subSchema.$ref, spec) : subSchema
+
+        // If resolved schema has properties, merge them
+        if (resolved?.properties) {
+          for (const [key, prop] of Object.entries(resolved.properties)) {
+            mergedProperties[key] = this.generateExampleValue(prop as any, key, spec)
+          }
+        }
+        // If it's an object type without properties, recursively process it
+        else if (resolved) {
+          const value = this.generateExampleValue(resolved, propertyName, spec)
+          if (value && typeof value === 'object') {
+            Object.assign(mergedProperties, value)
+          }
+        }
+      }
+
+      return Object.keys(mergedProperties).length > 0 ? mergedProperties : undefined
+    }
 
     // Handle arrays
     if (schema.type === 'array') {
-      return [this.generateExampleValue(schema.items)]
+      return [this.generateExampleValue(schema.items, undefined, spec)]
     }
 
     // Handle objects
@@ -203,7 +277,7 @@ class ToonFetchMCPServer {
       const example: any = {}
       if (schema.properties) {
         for (const [key, prop] of Object.entries(schema.properties)) {
-          example[key] = this.generateExampleValue(prop as any, key)
+          example[key] = this.generateExampleValue(prop as any, key, spec)
         }
       }
       return example
@@ -423,10 +497,10 @@ class ToonFetchMCPServer {
     if (operation.parameters) {
       for (const param of operation.parameters) {
         if (param.in === 'path') {
-          pathParams[param.name] = this.generateExampleValue(param.schema, param.name)
+          pathParams[param.name] = this.generateExampleValue(param.schema, param.name, spec)
         }
         else if (param.in === 'query') {
-          queryParams[param.name] = this.generateExampleValue(param.schema, param.name)
+          queryParams[param.name] = this.generateExampleValue(param.schema, param.name, spec)
         }
       }
     }
@@ -435,8 +509,14 @@ class ToonFetchMCPServer {
     if (operation.requestBody) {
       const content = operation.requestBody.content
       const jsonContent = content?.['application/json']
+      console.error(`[DEBUG] ${method} ${path} - requestBody exists:`, !!operation.requestBody)
+      console.error(`[DEBUG] ${method} ${path} - content exists:`, !!content)
+      console.error(`[DEBUG] ${method} ${path} - jsonContent exists:`, !!jsonContent)
+      console.error(`[DEBUG] ${method} ${path} - schema exists:`, !!jsonContent?.schema)
       if (jsonContent?.schema) {
-        requestBody = this.generateExampleValue(jsonContent.schema)
+        console.error(`[DEBUG] ${method} ${path} - schema keys:`, Object.keys(jsonContent.schema))
+        requestBody = this.generateExampleValue(jsonContent.schema, undefined, spec)
+        console.error(`[DEBUG] Generated requestBody for ${method} ${path}:`, requestBody !== undefined ? `${Object.keys(requestBody || {}).length} properties` : 'undefined')
       }
     }
 
