@@ -234,6 +234,79 @@ class ToonFetchMCPServer {
   }
 
   /**
+   * Extract authentication information from OpenAPI spec.
+   *
+   * Analyzes security requirements and security schemes to determine
+   * the authentication method, environment variable name, and header format.
+   *
+   * @param spec - Complete OpenAPI specification object
+   * @param operation - OpenAPI operation object
+   * @param apiName - Full API identifier (e.g., "ory/kratos")
+   * @returns Authentication information including type, env var name, and header details
+   * @private
+   *
+   * @example
+   * ```typescript
+   * const authInfo = extractAuthInfo(spec, operation, "hetzner/cloud")
+   * // Returns: { type: 'bearer', envVarName: 'HCLOUD_TOKEN', headerName: 'Authorization', scheme: 'bearer' }
+   * ```
+   */
+  private extractAuthInfo(spec: any, operation: any, apiName: string): {
+    type: string | null
+    envVarName: string | null
+    headerName: string
+    scheme?: string
+  } {
+    // Get security requirements (endpoint-level takes precedence over global)
+    const securityReqs = operation.security || spec.security || []
+
+    // If no security requirements, return null
+    if (!securityReqs || securityReqs.length === 0) {
+      return { type: null, envVarName: null, headerName: 'Authorization' }
+    }
+
+    // Get the first security requirement
+    const firstReq = securityReqs[0]
+    if (!firstReq) {
+      return { type: null, envVarName: null, headerName: 'Authorization' }
+    }
+
+    const schemeName = Object.keys(firstReq)[0]
+    if (!schemeName) {
+      return { type: null, envVarName: null, headerName: 'Authorization' }
+    }
+
+    // Look up the security scheme definition
+    const scheme = spec.components?.securitySchemes?.[schemeName]
+
+    if (!scheme) {
+      return { type: null, envVarName: null, headerName: 'Authorization' }
+    }
+
+    // Infer environment variable name based on API
+    let envVarName: string | null = null
+    if (apiName.includes('hetzner')) {
+      envVarName = 'HCLOUD_TOKEN'
+    }
+    else if (apiName.includes('digitalocean')) {
+      envVarName = 'DIGITALOCEAN_TOKEN'
+    }
+    else if (apiName.includes('kratos') || apiName.includes('hydra') || apiName.includes('ory')) {
+      envVarName = 'ORY_API_KEY'
+    }
+
+    // Get header name (for apiKey type) or default to Authorization
+    const headerName = scheme.name || 'Authorization'
+
+    return {
+      type: scheme.type,
+      scheme: scheme.scheme,
+      envVarName,
+      headerName,
+    }
+  }
+
+  /**
    * Generate a complete TypeScript code example for an API endpoint.
    *
    * Creates copy-paste-ready code including imports, client setup, and request execution.
@@ -241,6 +314,7 @@ class ToonFetchMCPServer {
    * and request bodies based on the OpenAPI specification.
    *
    * @param apiName - Full API identifier (e.g., "ory/kratos")
+   * @param spec - Complete OpenAPI specification object
    * @param path - Endpoint path (e.g., "/admin/identities")
    * @param method - HTTP method (e.g., "get", "post")
    * @param operation - OpenAPI operation object from the spec
@@ -251,6 +325,7 @@ class ToonFetchMCPServer {
    * ```typescript
    * const example = generateCodeExample(
    *   "ory/kratos",
+   *   specObject,
    *   "/admin/identities",
    *   "post",
    *   operationObject
@@ -258,9 +333,12 @@ class ToonFetchMCPServer {
    * console.log(example.fullExample) // Complete executable TypeScript code
    * ```
    */
-  private generateCodeExample(apiName: string, path: string, method: string, operation: any): CodeExample {
+  private generateCodeExample(apiName: string, spec: any, path: string, method: string, operation: any): CodeExample {
     const serviceName = this.getApiServiceName(apiName)
     const methodUpper = method.toUpperCase()
+
+    // Extract authentication information
+    const authInfo = this.extractAuthInfo(spec, operation, apiName)
 
     // Generate imports
     const imports = `import { createClient, ${serviceName} } from 'toonfetch/${apiName.split('/')[0]}'`
@@ -270,10 +348,35 @@ class ToonFetchMCPServer {
       ? 'https://your-kratos-instance.com'
       : apiName.includes('hydra')
         ? 'https://your-hydra-instance.com'
-        : 'https://api.example.com'
+        : apiName.includes('hetzner')
+          ? 'https://api.hetzner.cloud/v1'
+          : apiName.includes('digitalocean')
+            ? 'https://api.digitalocean.com/v2'
+            : 'https://api.example.com'
 
-    const setup = `const client = createClient({
-  baseURL: '${baseUrlExample}',
+    // Build client setup with authentication
+    let setup = `const client = createClient({
+  baseURL: '${baseUrlExample}',`
+
+    // Add authentication headers if required
+    if (authInfo.type && authInfo.envVarName) {
+      if (authInfo.type === 'http' && authInfo.scheme === 'bearer') {
+        // Bearer token authentication
+        setup += `
+  headers: {
+    'Authorization': \`Bearer \${process.env.${authInfo.envVarName}}\`,
+  },`
+      }
+      else if (authInfo.type === 'apiKey') {
+        // API Key authentication
+        setup += `
+  headers: {
+    '${authInfo.headerName}': process.env.${authInfo.envVarName},
+  },`
+      }
+    }
+
+    setup += `
 }).with(${serviceName})`
 
     // Extract parameters
@@ -322,10 +425,20 @@ class ToonFetchMCPServer {
 ${options.join(',\n')}
 })`
 
+    // Generate authentication comment
+    let authComment = ''
+    if (authInfo.type && authInfo.envVarName) {
+      authComment = `// Authentication required: Set your API token as an environment variable
+// export ${authInfo.envVarName}='your-token-here'
+// or for quick testing: headers: { 'Authorization': 'Bearer your-token-here' }
+
+`
+    }
+
     // Generate full example
     const fullExample = `${imports}
 
-// Initialize the client
+${authComment}// Initialize the client
 ${setup}
 
 // Make the request
@@ -364,7 +477,11 @@ ${operation.operationId || 'makeRequest'}().catch(console.error)`
       ? 'https://your-kratos-instance.com'
       : apiName.includes('hydra')
         ? 'https://your-hydra-instance.com'
-        : 'https://api.example.com'
+        : apiName.includes('hetzner')
+          ? 'https://api.hetzner.cloud/v1'
+          : apiName.includes('digitalocean')
+            ? 'https://api.digitalocean.com/v2'
+            : 'https://api.example.com'
 
     // Find a few common operations
     const paths = spec.paths || {}
@@ -378,18 +495,53 @@ ${operation.operationId || 'makeRequest'}().catch(console.error)`
       }
     }
 
+    // Extract auth info from the first operation (most likely same for all)
+    const authInfo = operations.length > 0 && operations[0]
+      ? this.extractAuthInfo(spec, operations[0].operation, apiName)
+      : { type: null, envVarName: null, headerName: 'Authorization' }
+
+    // Build setup with authentication
+    let setup = `const client = createClient({
+  baseURL: '${baseUrlExample}',`
+
+    if (authInfo.type && authInfo.envVarName) {
+      if (authInfo.type === 'http' && authInfo.scheme === 'bearer') {
+        setup += `
+  headers: {
+    'Authorization': \`Bearer \${process.env.${authInfo.envVarName}}\`,
+  },`
+      }
+      else if (authInfo.type === 'apiKey') {
+        setup += `
+  headers: {
+    '${authInfo.headerName}': process.env.${authInfo.envVarName},
+  },`
+      }
+    }
+
+    setup += `
+}).with(${serviceName})`
+
     let examples = ''
     for (const { path, method, operation } of operations) {
-      const example = this.generateCodeExample(apiName, path, method, operation)
+      const example = this.generateCodeExample(apiName, spec, path, method, operation)
       examples += `\n// ${operation.summary || operation.operationId || 'Example'}\n${example.usage}\n`
     }
 
-    return `import { createClient, ${serviceName} } from 'toonfetch/${apiName.split('/')[0]}'
+    // Add authentication setup comment if needed
+    let authSetup = ''
+    if (authInfo.type && authInfo.envVarName) {
+      authSetup = `
+// Authentication: Set your API token
+// export ${authInfo.envVarName}='your-token-here'
 
+`
+    }
+
+    return `import { createClient, ${serviceName} } from 'toonfetch/${apiName.split('/')[0]}'
+${authSetup}
 // Initialize the ${spec.info?.title || serviceName} client
-const client = createClient({
-  baseURL: '${baseUrlExample}',
-}).with(${serviceName})
+${setup}
 
 // Common operations:
 ${examples}
@@ -678,7 +830,7 @@ ${examples}
     }
 
     // Generate code example
-    const codeExample = this.generateCodeExample(args.api_name, args.path, args.method, operation)
+    const codeExample = this.generateCodeExample(args.api_name, spec.spec, args.path, args.method, operation)
 
     // Filter out x-codeSamples and x-code-samples to prevent SDK confusion
     // These contain SDK-specific examples that don't apply to the raw REST API
@@ -739,7 +891,7 @@ ${examples}
       throw new Error(`Method not found: ${args.method} for path ${args.path}`)
     }
 
-    const codeExample = this.generateCodeExample(args.api_name, args.path, args.method, operation)
+    const codeExample = this.generateCodeExample(args.api_name, spec.spec, args.path, args.method, operation)
 
     return {
       content: [
