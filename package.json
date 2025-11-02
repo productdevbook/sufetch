@@ -18,12 +18,13 @@
     "openapi-specs"
   ],
   "scripts": {
-    "build": "pnpm update:exports && tsdown && pnpm copy:types && pnpm add:refs",
+    "build": "pnpm convert:toon && pnpm update:exports && tsdown && pnpm copy:types && pnpm add:refs",
     "automd": "automd",
     "generate:types": "tsx scripts/generate-types.ts",
     "update:exports": "tsx scripts/update-exports.ts",
     "copy:types": "tsx scripts/copy-types.ts",
     "add:refs": "tsx scripts/add-type-references.ts",
+    "convert:toon": "tsx scripts/convert-to-toon.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test": "pnpm -r test",
