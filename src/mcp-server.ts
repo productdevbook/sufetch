@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable node/prefer-global/process */
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -63,6 +64,13 @@ class ToonFetchMCPServer {
   private server: Server
   private specs: Map<string, ApiSpec> = new Map()
   private specsDir: string
+  private debug: boolean = process.env.TOONFETCH_DEBUG === 'true'
+  // Performance optimization caches
+  private refCache: Map<string, any> = new Map() // cacheKey -> resolved schema
+  private exampleCache: Map<string, { timestamp: number, example: CodeExample }> = new Map()
+  private responseAnalysisCache: Map<string, ReturnType<typeof this.analyzeResponseStructure>> = new Map()
+  private readonly EXAMPLE_CACHE_SIZE = 100
+  private readonly EXAMPLE_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
 
   /**
    * Initialize the MCP server and load API specifications.
@@ -89,9 +97,21 @@ class ToonFetchMCPServer {
     const projectRoot = resolve(__dirname, '..')
     this.specsDir = resolve(projectRoot, 'openapi-specs')
 
-    console.error(`Looking for specs in: ${this.specsDir}`)
+    this.log(`Looking for specs in: ${this.specsDir}`)
     this.loadSpecs()
     this.setupHandlers()
+  }
+
+  /**
+   * Log debug messages when debug mode is enabled.
+   *
+   * @param args - Arguments to log
+   * @private
+   */
+  private log(...args: any[]) {
+    if (this.debug) {
+      console.error(...args)
+    }
   }
 
   /**
@@ -130,17 +150,17 @@ class ToonFetchMCPServer {
               })
             }
             catch (error) {
-              console.error(`Failed to load ${fullPath}:`, error)
+              this.log(`Failed to load ${fullPath}:`, error)
             }
           }
         }
       }
 
       scanDir(this.specsDir)
-      console.error(`Loaded ${this.specs.size} API specs`)
+      this.log(`Loaded ${this.specs.size} API specs`)
     }
     catch (error) {
-      console.error('Failed to load specs:', error)
+      this.log('Failed to load specs:', error)
     }
   }
 
@@ -182,39 +202,53 @@ class ToonFetchMCPServer {
    * ```
    */
   /**
-   * Resolve a JSON reference ($ref) in an OpenAPI spec.
+   * Resolve a JSON reference ($ref) in an OpenAPI spec with caching.
    *
    * @param ref - Reference string (e.g., "#/components/schemas/User")
    * @param spec - Complete OpenAPI specification object
+   * @param cacheKey - Optional cache key (e.g., API name) for cache lookup
    * @returns Resolved schema object or undefined
    * @private
    */
-  private resolveRef(ref: string, spec: any): any {
+  private resolveRef(ref: string, spec: any, cacheKey?: string): any {
     if (!ref || !ref.startsWith('#/')) {
-      console.error('[resolveRef] Invalid ref:', ref)
+      this.log('[resolveRef] Invalid ref:', ref)
       return undefined
     }
 
+    // Check cache if key provided
+    const fullCacheKey = cacheKey ? `${cacheKey}:${ref}` : ref
+    if (this.refCache.has(fullCacheKey)) {
+      this.log('[resolveRef] Cache hit for:', fullCacheKey)
+      return this.refCache.get(fullCacheKey)
+    }
+
     const path = ref.substring(2).split('/')
-    console.error('[resolveRef] Path segments:', path)
+    this.log('[resolveRef] Path segments:', path)
     let current = spec
 
     for (const segment of path) {
       if (!current || typeof current !== 'object') {
-        console.error('[resolveRef] Failed at segment:', segment, 'current type:', typeof current)
+        this.log('[resolveRef] Failed at segment:', segment, 'current type:', typeof current)
         return undefined
       }
       current = current[segment]
-      console.error('[resolveRef] After segment', segment, ':', current ? 'exists' : 'undefined')
+      this.log('[resolveRef] After segment', segment, ':', current ? 'exists' : 'undefined')
     }
 
-    console.error('[resolveRef] Final result:', current ? 'exists' : 'undefined', '- has allOf:', !!current?.allOf)
+    this.log('[resolveRef] Final result:', current ? 'exists' : 'undefined', '- has allOf:', !!current?.allOf)
+
+    // Cache the result
+    if (current !== undefined) {
+      this.refCache.set(fullCacheKey, current)
+    }
+
     return current
   }
 
-  private generateExampleValue(schema: any, propertyName?: string, spec?: any): any {
+  private generateExampleValue(schema: any, propertyName?: string, spec?: any, cacheKey?: string): any {
     if (!schema) {
-      console.error('[generateExampleValue] Schema is null/undefined')
+      this.log('[generateExampleValue] Schema is null/undefined')
       return undefined
     }
 
@@ -224,22 +258,22 @@ class ToonFetchMCPServer {
 
     // Handle references - resolve and recurse
     if (schema.$ref && spec) {
-      console.error('[generateExampleValue] Resolving $ref:', schema.$ref)
-      const resolved = this.resolveRef(schema.$ref, spec)
+      this.log('[generateExampleValue] Resolving $ref:', schema.$ref)
+      const resolved = this.resolveRef(schema.$ref, spec, cacheKey)
       if (resolved)
-        return this.generateExampleValue(resolved, propertyName, spec)
+        return this.generateExampleValue(resolved, propertyName, spec, cacheKey)
     }
 
     // Handle oneOf/anyOf - use first option
     if (schema.oneOf && schema.oneOf.length > 0) {
-      console.error('[generateExampleValue] Found oneOf with', schema.oneOf.length, 'options')
-      console.error('[generateExampleValue] First oneOf option:', JSON.stringify(schema.oneOf[0]).substring(0, 200))
-      const result = this.generateExampleValue(schema.oneOf[0], propertyName, spec)
-      console.error('[generateExampleValue] oneOf result:', result !== undefined ? 'has value' : 'undefined')
+      this.log('[generateExampleValue] Found oneOf with', schema.oneOf.length, 'options')
+      this.log('[generateExampleValue] First oneOf option:', JSON.stringify(schema.oneOf[0]).substring(0, 200))
+      const result = this.generateExampleValue(schema.oneOf[0], propertyName, spec, cacheKey)
+      this.log('[generateExampleValue] oneOf result:', result !== undefined ? 'has value' : 'undefined')
       return result
     }
     if (schema.anyOf && schema.anyOf.length > 0) {
-      return this.generateExampleValue(schema.anyOf[0], propertyName, spec)
+      return this.generateExampleValue(schema.anyOf[0], propertyName, spec, cacheKey)
     }
 
     // Handle allOf - merge all properties from all schemas
@@ -247,17 +281,17 @@ class ToonFetchMCPServer {
       const mergedProperties: any = {}
 
       for (const subSchema of schema.allOf) {
-        const resolved = subSchema.$ref ? this.resolveRef(subSchema.$ref, spec) : subSchema
+        const resolved = subSchema.$ref ? this.resolveRef(subSchema.$ref, spec, cacheKey) : subSchema
 
         // If resolved schema has properties, merge them
         if (resolved?.properties) {
           for (const [key, prop] of Object.entries(resolved.properties)) {
-            mergedProperties[key] = this.generateExampleValue(prop as any, key, spec)
+            mergedProperties[key] = this.generateExampleValue(prop as any, key, spec, cacheKey)
           }
         }
         // If it's an object type without properties, recursively process it
         else if (resolved) {
-          const value = this.generateExampleValue(resolved, propertyName, spec)
+          const value = this.generateExampleValue(resolved, propertyName, spec, cacheKey)
           if (value && typeof value === 'object') {
             Object.assign(mergedProperties, value)
           }
@@ -269,7 +303,7 @@ class ToonFetchMCPServer {
 
     // Handle arrays
     if (schema.type === 'array') {
-      return [this.generateExampleValue(schema.items, undefined, spec)]
+      return [this.generateExampleValue(schema.items, undefined, spec, cacheKey)]
     }
 
     // Handle objects
@@ -277,7 +311,7 @@ class ToonFetchMCPServer {
       const example: any = {}
       if (schema.properties) {
         for (const [key, prop] of Object.entries(schema.properties)) {
-          example[key] = this.generateExampleValue(prop as any, key, spec)
+          example[key] = this.generateExampleValue(prop as any, key, spec, cacheKey)
         }
       }
       return example
@@ -415,10 +449,11 @@ class ToonFetchMCPServer {
    *
    * @param operation - OpenAPI operation object
    * @param spec - Complete OpenAPI specification object
+   * @param cacheKey - Optional cache key for $ref resolution
    * @returns Response structure information or null if no response schema found
    * @private
    */
-  private analyzeResponseStructure(operation: any, spec: any): {
+  private analyzeResponseStructure(operation: any, spec: any, cacheKey?: string): {
     statusCode: number
     schema: any
     wrapperKeys: string[]
@@ -427,6 +462,12 @@ class ToonFetchMCPServer {
     isArray: boolean
     hasActions: boolean
   } | null {
+    // Check cache if key provided
+    if (cacheKey && this.responseAnalysisCache.has(cacheKey)) {
+      this.log('[analyzeResponseStructure] Cache hit for:', cacheKey)
+      return this.responseAnalysisCache.get(cacheKey)!
+    }
+
     if (!operation.responses) {
       return null
     }
@@ -458,7 +499,7 @@ class ToonFetchMCPServer {
 
     // Resolve $ref if present
     if (schema.$ref) {
-      schema = this.resolveRef(schema.$ref, spec)
+      schema = this.resolveRef(schema.$ref, spec, cacheKey)
       if (!schema) {
         return null
       }
@@ -468,7 +509,7 @@ class ToonFetchMCPServer {
     if (schema.oneOf && schema.oneOf.length > 0) {
       let firstOption = schema.oneOf[0]
       if (firstOption.$ref) {
-        firstOption = this.resolveRef(firstOption.$ref, spec)
+        firstOption = this.resolveRef(firstOption.$ref, spec, cacheKey)
       }
       if (firstOption) {
         schema = firstOption
@@ -477,7 +518,7 @@ class ToonFetchMCPServer {
     else if (schema.anyOf && schema.anyOf.length > 0) {
       let firstOption = schema.anyOf[0]
       if (firstOption.$ref) {
-        firstOption = this.resolveRef(firstOption.$ref, spec)
+        firstOption = this.resolveRef(firstOption.$ref, spec, cacheKey)
       }
       if (firstOption) {
         schema = firstOption
@@ -490,7 +531,7 @@ class ToonFetchMCPServer {
 
     // Resolve items $ref for arrays
     if (propertiesSchema.$ref) {
-      propertiesSchema = this.resolveRef(propertiesSchema.$ref, spec)
+      propertiesSchema = this.resolveRef(propertiesSchema.$ref, spec, cacheKey)
     }
 
     // Extract wrapper keys (top-level properties that might contain resources)
@@ -510,7 +551,7 @@ class ToonFetchMCPServer {
 
         // Detect primary resource (object with nested properties)
         const prop = properties[key]
-        const resolvedProp = prop.$ref ? this.resolveRef(prop.$ref, spec) : prop
+        const resolvedProp = prop.$ref ? this.resolveRef(prop.$ref, spec, cacheKey) : prop
 
         if (!primaryResource && resolvedProp?.type === 'object' && resourcePatterns.includes(key)) {
           primaryResource = key
@@ -526,7 +567,7 @@ class ToonFetchMCPServer {
       if (!primaryResource && wrapperKeys.length > 0) {
         for (const key of wrapperKeys) {
           const prop = properties[key]
-          const resolvedProp = prop.$ref ? this.resolveRef(prop.$ref, spec) : prop
+          const resolvedProp = prop.$ref ? this.resolveRef(prop.$ref, spec, cacheKey) : prop
 
           if (resolvedProp?.type === 'object' && key !== 'links' && key !== 'meta' && key !== 'metadata') {
             primaryResource = key
@@ -538,7 +579,7 @@ class ToonFetchMCPServer {
       // Extract important fields from primary resource
       if (primaryResource) {
         const resourceProp = properties[primaryResource]
-        const resolvedResource = resourceProp.$ref ? this.resolveRef(resourceProp.$ref, spec) : resourceProp
+        const resolvedResource = resourceProp.$ref ? this.resolveRef(resourceProp.$ref, spec, cacheKey) : resourceProp
 
         if (resolvedResource?.properties) {
           const importantFieldNames = ['id', 'name', 'status', 'state', 'created', 'created_at', 'updated_at', 'ip', 'ip_address', 'email']
@@ -552,7 +593,7 @@ class ToonFetchMCPServer {
       }
     }
 
-    return {
+    const result = {
       statusCode,
       schema,
       wrapperKeys,
@@ -561,6 +602,13 @@ class ToonFetchMCPServer {
       isArray,
       hasActions,
     }
+
+    // Cache the result if key provided
+    if (cacheKey) {
+      this.responseAnalysisCache.set(cacheKey, result)
+    }
+
+    return result
   }
 
   /**
@@ -591,6 +639,15 @@ class ToonFetchMCPServer {
    * ```
    */
   private generateCodeExample(apiName: string, spec: any, path: string, method: string, operation: any): CodeExample {
+    // Check cache first
+    const cacheKey = `${apiName}:${path}:${method}`
+    const cached = this.exampleCache.get(cacheKey)
+
+    if (cached && Date.now() - cached.timestamp < this.EXAMPLE_CACHE_TTL) {
+      this.log('[generateCodeExample] Cache hit for:', cacheKey)
+      return cached.example
+    }
+
     const serviceName = this.getApiServiceName(apiName)
     const methodUpper = method.toUpperCase()
 
@@ -600,8 +657,8 @@ class ToonFetchMCPServer {
     // Get type helper name for type-safe code generation
     const typeHelperName = this.getTypeHelperName(apiName)
 
-    // Analyze response structure for intuitive code generation
-    const responseStructure = this.analyzeResponseStructure(operation, spec)
+    // Analyze response structure for intuitive code generation (with caching)
+    const responseStructure = this.analyzeResponseStructure(operation, spec, apiName)
 
     // Generate imports
     let imports = `import { createClient, ${serviceName} } from 'toonfetch/${apiName.split('/')[0]}'`
@@ -623,43 +680,36 @@ class ToonFetchMCPServer {
             : 'https://api.example.com'
 
     // Build client setup with authentication
-    let setup = `const client = createClient({
-  baseURL: '${baseUrlExample}',`
+    const setupParts = [`const client = createClient({`, `  baseURL: '${baseUrlExample}',`]
 
     // Add authentication headers if required
     if (authInfo.type && authInfo.envVarName) {
       if (authInfo.type === 'http' && authInfo.scheme === 'bearer') {
         // Bearer token authentication
-        setup += `
-  headers: {
-    'Authorization': \`Bearer \${process.env.${authInfo.envVarName}}\`,
-  },`
+        setupParts.push(`  headers: {`, `    'Authorization': \`Bearer \${process.env.${authInfo.envVarName}}\`,`, `  },`)
       }
       else if (authInfo.type === 'apiKey') {
         // API Key authentication
-        setup += `
-  headers: {
-    '${authInfo.headerName}': process.env.${authInfo.envVarName},
-  },`
+        setupParts.push(`  headers: {`, `    '${authInfo.headerName}': process.env.${authInfo.envVarName},`, `  },`)
       }
     }
 
-    setup += `
-}).with(${serviceName})`
+    setupParts.push(`}).with(${serviceName})`)
+    const setup = setupParts.join('\n')
 
     // Extract parameters
     const pathParams: any = {}
     const queryParams: any = {}
     let requestBody: any
 
-    // Process parameters
+    // Process parameters (with caching)
     if (operation.parameters) {
       for (const param of operation.parameters) {
         if (param.in === 'path') {
-          pathParams[param.name] = this.generateExampleValue(param.schema, param.name, spec)
+          pathParams[param.name] = this.generateExampleValue(param.schema, param.name, spec, apiName)
         }
         else if (param.in === 'query') {
-          queryParams[param.name] = this.generateExampleValue(param.schema, param.name, spec)
+          queryParams[param.name] = this.generateExampleValue(param.schema, param.name, spec, apiName)
         }
       }
     }
@@ -674,13 +724,13 @@ class ToonFetchMCPServer {
       const jsonContent = content?.['application/json']
       isRequestBodyRequired = operation.requestBody.required === true
 
-      console.error(`[DEBUG] ${method} ${path} - requestBody exists:`, !!operation.requestBody)
-      console.error(`[DEBUG] ${method} ${path} - content exists:`, !!content)
-      console.error(`[DEBUG] ${method} ${path} - jsonContent exists:`, !!jsonContent)
-      console.error(`[DEBUG] ${method} ${path} - schema exists:`, !!jsonContent?.schema)
+      this.log(`[DEBUG] ${method} ${path} - requestBody exists:`, !!operation.requestBody)
+      this.log(`[DEBUG] ${method} ${path} - content exists:`, !!content)
+      this.log(`[DEBUG] ${method} ${path} - jsonContent exists:`, !!jsonContent)
+      this.log(`[DEBUG] ${method} ${path} - schema exists:`, !!jsonContent?.schema)
 
       if (jsonContent?.schema) {
-        console.error(`[DEBUG] ${method} ${path} - schema keys:`, Object.keys(jsonContent.schema))
+        this.log(`[DEBUG] ${method} ${path} - schema keys:`, Object.keys(jsonContent.schema))
         requestBodySchema = jsonContent.schema
 
         // Resolve $ref if present
@@ -702,8 +752,8 @@ class ToonFetchMCPServer {
           }
         }
 
-        requestBody = this.generateExampleValue(jsonContent.schema, undefined, spec)
-        console.error(`[DEBUG] Generated requestBody for ${method} ${path}:`, requestBody !== undefined ? `${Object.keys(requestBody || {}).length} properties` : 'undefined')
+        requestBody = this.generateExampleValue(jsonContent.schema, undefined, spec, apiName)
+        this.log(`[DEBUG] Generated requestBody for ${method} ${path}:`, requestBody !== undefined ? `${Object.keys(requestBody || {}).length} properties` : 'undefined')
       }
     }
 
@@ -864,27 +914,45 @@ ${requestOptions.join(',\n')}
     }
 
     // Generate authentication comment
-    let authComment = ''
+    const authCommentParts: string[] = []
     if (authInfo.type && authInfo.envVarName) {
-      authComment = `// Authentication: Set your API token
-// export ${authInfo.envVarName}='your-token-here'
-
-`
+      authCommentParts.push(
+        '// Authentication: Set your API token',
+        `// export ${authInfo.envVarName}='your-token-here'`,
+        '',
+      )
     }
 
     // Generate full example (clean, modern style)
-    const fullExample = `${imports}
-${typeDefinitions}
-${authComment}${setup}
-${typedVariables}
-${usage}`
+    const fullExampleParts = [imports, typeDefinitions]
+    if (authCommentParts.length > 0) {
+      fullExampleParts.push(authCommentParts.join('\n'))
+    }
+    fullExampleParts.push(setup, typedVariables, usage)
+    const fullExample = fullExampleParts.filter(p => p).join('\n')
 
-    return {
+    const result: CodeExample = {
       imports,
       setup,
       usage,
       fullExample,
     }
+
+    // Cache the result with LRU eviction
+    if (this.exampleCache.size >= this.EXAMPLE_CACHE_SIZE) {
+      // Remove oldest entry (first key)
+      const firstKey = this.exampleCache.keys().next().value
+      if (firstKey) {
+        this.exampleCache.delete(firstKey)
+      }
+    }
+
+    this.exampleCache.set(cacheKey, {
+      timestamp: Date.now(),
+      example: result,
+    })
+
+    return result
   }
 
   /**
@@ -928,51 +996,44 @@ ${usage}`
       : { type: null, envVarName: null, headerName: 'Authorization' }
 
     // Build setup with authentication
-    let setup = `const client = createClient({
-  baseURL: '${baseUrlExample}',`
+    const setupParts = [`const client = createClient({`, `  baseURL: '${baseUrlExample}',`]
 
     if (authInfo.type && authInfo.envVarName) {
       if (authInfo.type === 'http' && authInfo.scheme === 'bearer') {
-        setup += `
-  headers: {
-    'Authorization': \`Bearer \${process.env.${authInfo.envVarName}}\`,
-  },`
+        setupParts.push(`  headers: {`, `    'Authorization': \`Bearer \${process.env.${authInfo.envVarName}}\`,`, `  },`)
       }
       else if (authInfo.type === 'apiKey') {
-        setup += `
-  headers: {
-    '${authInfo.headerName}': process.env.${authInfo.envVarName},
-  },`
+        setupParts.push(`  headers: {`, `    '${authInfo.headerName}': process.env.${authInfo.envVarName},`, `  },`)
       }
     }
 
-    setup += `
-}).with(${serviceName})`
+    setupParts.push(`}).with(${serviceName})`)
+    const setup = setupParts.join('\n')
 
-    let examples = ''
+    const exampleParts: string[] = []
     for (const { path, method, operation } of operations) {
       const example = this.generateCodeExample(apiName, spec, path, method, operation)
-      examples += `\n// ${operation.summary || operation.operationId || 'Example'}\n${example.usage}\n`
+      exampleParts.push(`// ${operation.summary || operation.operationId || 'Example'}`, example.usage, '')
     }
+    const examples = exampleParts.join('\n')
 
-    // Add authentication setup comment if needed
-    let authSetup = ''
+    // Build result parts
+    const resultParts = [`import { createClient, ${serviceName} } from 'toonfetch/${apiName.split('/')[0]}'`]
+
     if (authInfo.type && authInfo.envVarName) {
-      authSetup = `
-// Authentication: Set your API token
-// export ${authInfo.envVarName}='your-token-here'
-
-`
+      resultParts.push('', '// Authentication: Set your API token', `// export ${authInfo.envVarName}='your-token-here'`)
     }
 
-    return `import { createClient, ${serviceName} } from 'toonfetch/${apiName.split('/')[0]}'
-${authSetup}
-// Initialize the ${spec.info?.title || serviceName} client
-${setup}
+    resultParts.push(
+      '',
+      `// Initialize the ${spec.info?.title || serviceName} client`,
+      setup,
+      '',
+      '// Common operations:',
+      examples,
+    )
 
-// Common operations:
-${examples}
-`
+    return resultParts.join('\n')
   }
 
   /**
@@ -1412,6 +1473,9 @@ ${quickstart}
     const transport = new StdioServerTransport()
     await this.server.connect(transport)
     console.error('ToonFetch MCP server running on stdio')
+    if (this.debug) {
+      console.error('Debug mode enabled - Set TOONFETCH_DEBUG=false to disable verbose logging')
+    }
   }
 }
 
