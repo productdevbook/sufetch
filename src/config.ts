@@ -1,5 +1,5 @@
 /**
- * Configuration for ToonFetch MCP Server
+ * Configuration for SuFetch MCP Server
  *
  * All settings can be overridden via environment variables for flexibility
  * in different deployment environments (development, production, testing).

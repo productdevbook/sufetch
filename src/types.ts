@@ -1,5 +1,5 @@
 /**
- * Type definitions for ToonFetch MCP Server
+ * Type definitions for SuFetch MCP Server
  *
  * Provides type-safe interfaces for OpenAPI v3 specifications
  * and internal server data structures

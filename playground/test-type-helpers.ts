@@ -1,8 +1,8 @@
-// Test Type Helpers from toonfetch
+// Test Type Helpers from sufetch
 
-import type { HetznerCloud } from 'toonfetch/hetzner'
-import type { DigitalOcean } from 'toonfetch/digitalocean'
-import type { OryKaratos, OryHydra } from 'toonfetch/ory'
+import type { HetznerCloud } from 'sufetch/hetzner'
+import type { DigitalOcean } from 'sufetch/digitalocean'
+import type { OryKaratos, OryHydra } from 'sufetch/ory'
 
 // Hetzner Cloud: Get server response type
 type GetServerResponse = HetznerCloud<'/servers/{id}', 'get'>['response']

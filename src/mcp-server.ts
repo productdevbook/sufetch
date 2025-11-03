@@ -32,12 +32,12 @@ interface ApiSpec {
 }
 
 /**
- * ToonFetch MCP Server - Optimized Version
+ * SuFetch MCP Server - Optimized Version
  *
  * Provides AI assistants with introspection and code generation for OpenAPI specs.
  * Uses McpServer for automatic validation and cleaner code.
  */
-class ToonFetchMCPServer {
+class SuFetchMCPServer {
   private server: McpServer
   private specs: Map<string, ApiSpec> = new Map()
   private config: ServerConfig
@@ -1410,7 +1410,7 @@ Use \`search_endpoints\` to find relevant endpoints, then \`get_endpoint_details
 
     const transport = new StdioServerTransport()
     await this.server.connect(transport)
-    console.error('ToonFetch MCP server running on stdio')
+    console.error('SuFetch MCP server running on stdio')
     if (this.config.debug) {
       console.error('Debug mode enabled - Set TOONFETCH_DEBUG=false to disable verbose logging')
     }
@@ -1440,7 +1440,7 @@ Use \`search_endpoints\` to find relevant endpoints, then \`get_endpoint_details
 }
 
 // Start the server
-const server = new ToonFetchMCPServer()
+const server = new SuFetchMCPServer()
 server.run().catch((error) => {
   console.error('Failed to start server:', error)
   process.exit(1)

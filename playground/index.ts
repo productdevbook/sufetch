@@ -1,7 +1,7 @@
-import { createClient, hydra, kratos } from 'toonfetch/ory'
+import { createClient, hydra, kratos } from 'sufetch/ory'
 
 /**
- * Playground for testing ToonFetch with Ory services.
+ * Playground for testing SuFetch  with Ory services.
  *
  * Set these environment variables to use real endpoints:
  * - KRATOS_BASE_URL: Your Ory Kratos instance URL

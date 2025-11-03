@@ -41,8 +41,8 @@ export class TypeBasedGenerator {
 
     // Generate imports
     const imports = [
-      `import { createClient, ${serviceName} } from 'toonfetch/${packageName}'`,
-      `import type { ${typeHelper.name} } from 'toonfetch/${packageName}'`,
+      `import { createClient, ${serviceName} } from 'sufetch/${packageName}'`,
+      `import type { ${typeHelper.name} } from 'sufetch/${packageName}'`,
     ].join('\n')
 
     // Generate type definitions

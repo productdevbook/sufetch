@@ -35,7 +35,7 @@
 
   <!-- Main Title -->
   <text x="230" y="140" font-family="monospace" font-size="72" font-weight="700" fill="url(#textGradient)">
-    ToonFetch
+    SuFetch
   </text>
 
   <!-- Subtitle -->
@@ -82,7 +82,7 @@
       import { createClient }
     </text>
     <text x="0" y="25" font-family="monospace" font-size="14" fill="#F5E6D3">
-      from 'toonfetch'
+      from 'sufetch'
     </text>
     <text x="0" y="60" font-family="monospace" font-size="14" fill="#28CF8D">
       const client =
