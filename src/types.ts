@@ -92,7 +92,6 @@ export interface ResponseStructure {
   /** HTTP status code */
   statusCode: number
   /** Response schema (may contain $ref or be resolved) */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   schema: any
   /** Wrapper keys in the response (e.g., ["data", "servers"]) */
   wrapperKeys: string[]

@@ -78,15 +78,15 @@ export function loadConfig(): ServerConfig {
   const projectRoot = resolve(__dirname, '..')
 
   return {
-    debug: process.env.TOONFETCH_DEBUG === 'true',
+    debug: process.env.SUFETCH_DEBUG === 'true',
 
     cache: {
-      exampleSize: Number.parseInt(process.env.TOONFETCH_CACHE_SIZE || '100', 10),
-      exampleTTL: Number.parseInt(process.env.TOONFETCH_CACHE_TTL || String(5 * 60 * 1000), 10),
+      exampleSize: Number.parseInt(process.env.SUFETCH_CACHE_SIZE || '100', 10),
+      exampleTTL: Number.parseInt(process.env.SUFETCH_CACHE_TTL || String(5 * 60 * 1000), 10),
     },
 
     paths: {
-      specsDir: process.env.TOONFETCH_SPECS_DIR || resolve(projectRoot, 'openapi-specs'),
+      specsDir: process.env.SUFETCH_SPECS_DIR || resolve(projectRoot, 'openapi-specs'),
     },
 
     server: {

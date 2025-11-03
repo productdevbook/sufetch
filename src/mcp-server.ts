@@ -1076,8 +1076,6 @@ Use \`search_endpoints\` to find relevant endpoints, then \`get_endpoint_details
     return resolved
   }
 
-  // @ts-ignore - Keeping for potential future use
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   private analyzeResponseStructure(
     operation: OpenAPIOperation,
     spec: OpenAPIDocument,
@@ -1412,7 +1410,7 @@ Use \`search_endpoints\` to find relevant endpoints, then \`get_endpoint_details
     await this.server.connect(transport)
     console.error('SuFetch MCP server running on stdio')
     if (this.config.debug) {
-      console.error('Debug mode enabled - Set TOONFETCH_DEBUG=false to disable verbose logging')
+      console.error('Debug mode enabled - Set SUFETCH_DEBUG=false to disable verbose logging')
     }
 
     // Graceful shutdown handlers

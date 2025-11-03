@@ -323,7 +323,7 @@ export async function oauth2ClientLifecycle(): Promise<void> {
 // ========================================
 
 async function main() {
-  console.log('🚀 ToonFetch Ory Services Playground\n')
+  console.log('🚀 suFetch Ory Services Playground\n')
   console.log('📝 This playground demonstrates type-safe API calls using sufetch\n')
 
   // Check if real endpoints are configured
