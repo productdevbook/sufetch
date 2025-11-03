@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { loadConfig } from '../../src/config'
 
-describe('Config', () => {
+describe('config', () => {
   it('should load default configuration', () => {
     const config = loadConfig()
 

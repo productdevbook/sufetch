@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { parseApiSpec } from '../../src/type-parser'
 
-describe('Type Parser', () => {
+describe('type Parser', () => {
   it('should parse DigitalOcean API types', () => {
     const typesPath = join(process.cwd(), 'openapi-specs/digitalocean/types.d.ts')
 
