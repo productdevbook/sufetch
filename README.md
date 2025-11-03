@@ -1,4 +1,4 @@
-[![SuFetch banner](./.github/assets/bannerv2.svg)](https://github.com/productdevbook/sufetch)
+[![SuFetch banner](./.github/assets/bannerv3.svg)](https://github.com/productdevbook/sufetch)
 
 # SuFetch
 
@@ -27,13 +27,12 @@ SuFetch combines two powerful tools:
 1. **Type-Safe API Clients** - Generate fully-typed TypeScript clients from OpenAPI specifications
 2. **MCP Server** - Let AI assistants (like Claude) explore your APIs and generate code
 
-Built with [apiful](https://github.com/lisnote/apiful) and [TOON format](https://github.com/toon-format/toon) for efficient OpenAPI spec compression.
+Built with [apiful](https://github.com/lisnote/apiful) for type-safe OpenAPI clients.
 
 ## Features
 
 - ✨ **Fully Type-Safe** - Autocomplete and type checking for all API calls
 - 🤖 **MCP Integration** - AI assistants can explore and generate code for your APIs
-- 📦 **Compressed Specs** - TOON format reduces OpenAPI specs by 40-45%
 - 🔄 **Auto-Discovery** - Automatic service detection and type generation
 - 🛠️ **Modern Stack** - TypeScript 5.7, ESNext, strict mode
 - 🧪 **Well-Tested** - 76+ tests with >60% coverage
@@ -278,23 +277,6 @@ pnpm install && pnpm build
 
 **Still stuck?** [Open an issue](https://github.com/productdevbook/sufetch/issues) with your Node version and error message.
 
-## Why TOON Format?
-
-TOON compresses OpenAPI specs by ~40-50%:
-
-| Spec | JSON | TOON | Savings |
-|------|------|------|---------|
-| Hetzner Cloud | 747k tokens | 374k tokens | **50%** |
-| Ory Kratos | 134k tokens | 73k tokens | **45%** |
-| Ory Hydra | 69k tokens | 40k tokens | **42%** |
-
-**Benefits:**
-- Fits more APIs in Claude's context
-- Faster loading
-- Lower token costs
-
-Learn more: [TOON Format](https://github.com/toon-format/toon)
-
 ## Contributing
 
 Contributions welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md).
@@ -317,4 +299,4 @@ MIT © 2025
 
 ---
 
-Built with [apiful](https://github.com/lisnote/apiful) · [TOON](https://github.com/toon-format/toon) · [MCP](https://modelcontextprotocol.io/)
+Built with [apiful](https://github.com/lisnote/apiful) · [MCP](https://modelcontextprotocol.io/)

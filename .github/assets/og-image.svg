@@ -23,7 +23,7 @@
     OpenAPI
   </text>
   <text x="170" y="275" font-family="monospace" font-size="18" fill="#1E3A5F" text-anchor="middle" opacity="0.7">
-    .json/.toon
+    .json / .yaml
   </text>
 
   <!-- Arrow 1 -->
@@ -104,7 +104,7 @@
   <g transform="translate(420, 380)">
     <rect width="140" height="40" fill="#28CF8D" rx="20"/>
     <text x="70" y="26" font-family="sans-serif" font-size="16" font-weight="600" fill="white" text-anchor="middle">
-      📦 TOON
+      📦 SUFETCH
     </text>
   </g>
 

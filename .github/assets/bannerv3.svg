@@ -61,10 +61,10 @@
   </g>
 
   <g transform="translate(500, 210)">
-    <!-- TOON badge -->
+    <!-- sufetch badge -->
     <rect width="140" height="30" fill="none" stroke="#28CF8D" stroke-width="2" rx="15"/>
     <text x="70" y="20" font-family="sans-serif" font-size="14" font-weight="600" fill="#28CF8D" text-anchor="middle">
-      TOON Format
+      sufetch Format
     </text>
   </g>
 

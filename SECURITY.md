@@ -130,10 +130,11 @@ We appreciate responsible disclosure and will credit reporters in security advis
 - It reads OpenAPI specs from the local file system
 - Generated code examples are for demonstration only
 
-### TOON Format
+### OpenAPI Parsing
 
-- TOON decoding uses `@toon-format/toon` library
-- Malformed TOON files may fail to decode but should not cause security issues
+- OpenAPI specs are loaded from JSON files
+- Types are parsed from types.d.ts using oxc-parser
+- Malformed files may fail to parse but should not cause security issues
 - Always validate decoded OpenAPI specs before use
 
 ### Type Generation

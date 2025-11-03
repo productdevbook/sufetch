@@ -9,7 +9,6 @@ export default antfu(
       '.claude',
       'CLAUDE.md',
       'playground',
-      '**.toon',
       'openapi-specs/**/*.json',
       'openapi-specs/**/*.yaml',
       'openapi-specs/**/*.yml',

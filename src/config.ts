@@ -23,7 +23,7 @@ export interface ServerConfig {
 
   /** File system paths */
   paths: {
-    /** Directory containing OpenAPI specs in TOON format */
+    /** Directory containing OpenAPI specs */
     specsDir: string
   }
 
