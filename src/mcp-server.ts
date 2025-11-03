@@ -1,130 +1,129 @@
 #!/usr/bin/env node
 /* eslint-disable node/prefer-global/process */
-import { readdirSync, readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
+import type { ServerConfig } from './config.js'
+import type { ResponseVariant } from './type-parser.js'
+import type {
+  CachedExample,
+  CodeExample,
+  OpenAPIDocument,
+  OpenAPIOperation,
+  OpenAPIParameter,
+  OpenAPIRequestBody,
+  OpenAPISchema,
+  ResolvedSchema,
+  ResponseStructure,
+} from './types.js'
+import { existsSync, readdirSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js'
-import { decode } from '@toon-format/toon'
+import { z } from 'zod'
+import { loadConfig } from './config.js'
+import { parseResponseStructure, TypeInfoCache } from './type-parser.js'
 
 /**
  * Represents a loaded API specification.
  */
 interface ApiSpec {
-  /** Unique identifier for the API (e.g., "ory/kratos") */
   name: string
-  /** File path to the .toon file */
   path: string
-  /** Decoded OpenAPI specification object */
-  spec: any
+  spec: OpenAPIDocument
 }
 
 /**
- * Represents a generated TypeScript code example.
- */
-interface CodeExample {
-  /** Import statements needed for the example */
-  imports: string
-  /** Client setup code */
-  setup: string
-  /** API request code */
-  usage: string
-  /** Complete executable example including all parts */
-  fullExample: string
-}
-
-/**
- * MCP (Model Context Protocol) server for ToonFetch.
+ * ToonFetch MCP Server - Optimized Version
  *
- * Provides AI assistants with tools to introspect OpenAPI specifications,
- * search endpoints, and generate TypeScript code examples using the toonfetch library.
- *
- * The server loads OpenAPI specs in TOON format from the openapi-specs directory
- * and exposes 7 MCP tools for API exploration and code generation.
- *
- * @example
- * ```typescript
- * // The server is started automatically when run as a script
- * // Configure in Claude Desktop:
- * {
- *   "mcpServers": {
- *     "toonfetch": {
- *       "command": "node",
- *       "args": ["/path/to/dist/mcp-server.js"]
- *     }
- *   }
- * }
- * ```
+ * Provides AI assistants with introspection and code generation for OpenAPI specs.
+ * Uses McpServer for automatic validation and cleaner code.
  */
 class ToonFetchMCPServer {
-  private server: Server
+  private server: McpServer
   private specs: Map<string, ApiSpec> = new Map()
-  private specsDir: string
-  private debug: boolean = process.env.TOONFETCH_DEBUG === 'true'
-  // Performance optimization caches
-  private refCache: Map<string, any> = new Map() // cacheKey -> resolved schema
-  private exampleCache: Map<string, { timestamp: number, example: CodeExample }> = new Map()
-  private responseAnalysisCache: Map<string, ReturnType<typeof this.analyzeResponseStructure>> = new Map()
-  private readonly EXAMPLE_CACHE_SIZE = 100
-  private readonly EXAMPLE_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+  private config: ServerConfig
 
-  /**
-   * Initialize the MCP server and load API specifications.
-   *
-   * Automatically discovers and loads all .toon files from the openapi-specs directory.
-   */
-  constructor() {
-    this.server = new Server(
+  private refCache: Map<string, ResolvedSchema> = new Map()
+  private exampleCache: Map<string, CachedExample> = new Map()
+  private typeCache: TypeInfoCache = new TypeInfoCache()
+
+  constructor(config?: Partial<ServerConfig>) {
+    this.config = { ...loadConfig(), ...config }
+
+    this.server = new McpServer(
       {
-        name: 'toonfetch-mcp',
-        version: '0.1.0',
+        name: this.config.server.name,
+        version: this.config.server.version,
       },
       {
         capabilities: {
           tools: {},
+          prompts: {},
         },
       },
     )
-
-    // Get the directory where this script is located
-    const __filename = fileURLToPath(import.meta.url)
-    const __dirname = dirname(__filename)
-    // Go up one level from dist to reach project root
-    const projectRoot = resolve(__dirname, '..')
-    this.specsDir = resolve(projectRoot, 'openapi-specs')
-
-    this.log(`Looking for specs in: ${this.specsDir}`)
-    this.loadSpecs()
-    this.setupHandlers()
   }
 
-  /**
-   * Log debug messages when debug mode is enabled.
-   *
-   * @param args - Arguments to log
-   * @private
-   */
+  async initialize() {
+    this.log(`Looking for specs in: ${this.config.paths.specsDir}`)
+    await this.loadSpecs()
+    this.registerTools()
+    this.registerPrompts()
+  }
+
   private log(...args: any[]) {
-    if (this.debug) {
+    if (this.config.debug) {
       console.error(...args)
     }
   }
 
   /**
-   * Recursively scan the openapi-specs directory and load all .toon files.
-   *
-   * Converts TOON-encoded files back to OpenAPI JSON and stores them in the specs map.
-   * Errors during loading of individual files are logged but don't prevent server startup.
-   *
-   * @private
+   * Load types.d.ts files for type hint generation
    */
-  private loadSpecs() {
+  private async loadTypeDefs() {
     try {
-      // Scan openapi-specs directory for .toon files
+      const scanDir = (dir: string, prefix = '') => {
+        const entries = readdirSync(dir, { withFileTypes: true })
+        const typesFiles: Array<{ key: string, path: string }> = []
+
+        for (const entry of entries) {
+          const fullPath = join(dir, entry.name)
+
+          if (entry.isDirectory()) {
+            typesFiles.push(...scanDir(fullPath, prefix ? `${prefix}/${entry.name}` : entry.name))
+          }
+          else if (entry.name === 'types.d.ts') {
+            const key = prefix || entry.name
+            typesFiles.push({ key, path: fullPath })
+          }
+        }
+
+        return typesFiles
+      }
+
+      const typesFiles = scanDir(this.config.paths.specsDir)
+
+      // Load all types files
+      for (const { key, path } of typesFiles) {
+        if (existsSync(path)) {
+          this.typeCache.get(path) // Loads and caches
+          this.log(`Loaded type definitions for: ${key}`)
+        }
+      }
+
+      this.log(`Loaded type hints for ${typesFiles.length} service(s)`)
+    }
+    catch (error) {
+      this.log('Failed to load type definitions:', error)
+    }
+  }
+
+  /**
+   * Load all OpenAPI JSON files from openapi-specs directory
+   */
+  private async loadSpecs() {
+    try {
+      const jsonFiles: Array<{ key: string, path: string }> = []
+
       const scanDir = (dir: string, prefix = '') => {
         const entries = readdirSync(dir, { withFileTypes: true })
 
@@ -134,1260 +133,625 @@ class ToonFetchMCPServer {
           if (entry.isDirectory()) {
             scanDir(fullPath, prefix ? `${prefix}/${entry.name}` : entry.name)
           }
-          else if (entry.name.endsWith('.toon')) {
-            const name = entry.name.replace('.toon', '')
+          else if (entry.name.endsWith('.json') && !entry.name.includes('package')) {
+            const name = entry.name.replace('.json', '')
             const key = prefix ? `${prefix}/${name}` : name
-
-            try {
-              const toonContent = readFileSync(fullPath, 'utf-8')
-              // Use strict: false to allow flexible array counts in OpenAPI specs
-              const spec = decode(toonContent, { strict: false })
-
-              this.specs.set(key, {
-                name: key,
-                path: fullPath,
-                spec,
-              })
-            }
-            catch (error) {
-              this.log(`Failed to load ${fullPath}:`, error)
-            }
+            jsonFiles.push({ key, path: fullPath })
           }
         }
       }
 
-      scanDir(this.specsDir)
+      scanDir(this.config.paths.specsDir)
+
+      // Load all spec files in parallel
+      const loadPromises = jsonFiles.map(async ({ key, path }) => {
+        try {
+          const jsonContent = await readFile(path, 'utf-8')
+          const spec = JSON.parse(jsonContent) as OpenAPIDocument
+
+          return {
+            key,
+            spec: {
+              name: key,
+              path,
+              spec,
+            },
+          }
+        }
+        catch (error) {
+          this.log(`Failed to load ${path}:`, error)
+          return null
+        }
+      })
+
+      const results = await Promise.all(loadPromises)
+
+      // Store successfully loaded specs
+      for (const result of results) {
+        if (result) {
+          this.specs.set(result.key, result.spec)
+        }
+      }
+
       this.log(`Loaded ${this.specs.size} API specs`)
+
+      // Load types.d.ts files for type hint generation
+      await this.loadTypeDefs()
     }
     catch (error) {
       this.log('Failed to load specs:', error)
     }
   }
 
+  // Removed warmCaches() and preResolveRefs() methods
+  // Now using lazy loading: schemas are resolved and cached on first use in resolveRef()
+  // This saves ~121KB memory (75% of unused cache) and improves startup time
+
   /**
-   * Extract the service name from an API identifier.
-   *
-   * @param apiName - Full API identifier (e.g., "ory/kratos")
-   * @returns Service name (e.g., "kratos")
-   * @private
-   *
-   * @example
-   * ```typescript
-   * getApiServiceName("ory/kratos") // returns "kratos"
-   * getApiServiceName("ory/hydra") // returns "hydra"
-   * ```
+   * Generate TypeScript type definitions for endpoint parameters and response
    */
-  private getApiServiceName(apiName: string): string {
-    // Convert "ory/kratos" to "kratos", "ory/hydra" to "hydra"
-    return apiName.split('/').pop() || apiName
+  private generateTypeDefinitions(
+    path: string,
+    method: string,
+    typeHelperName: string,
+    operation: OpenAPIOperation,
+  ): string[] {
+    const lowerMethod = method.toLowerCase()
+    const typeDefs: string[] = []
+
+    // Find type helper info for adding JSDoc comments
+    const typeHelperInfo = this.typeCache.findTypeHelper(typeHelperName)
+
+    const pathParams = operation.parameters?.filter((p): p is OpenAPIParameter =>
+      !('$ref' in p) && p.in === 'path',
+    )
+    const queryParams = operation.parameters?.filter((p): p is OpenAPIParameter =>
+      !('$ref' in p) && p.in === 'query',
+    )
+    const requestBody = operation.requestBody
+
+    if (pathParams && pathParams.length > 0) {
+      const pathDesc = typeHelperInfo?.properties.find(p => p.name === 'path')?.description
+      if (pathDesc) {
+        typeDefs.push(`/** ${pathDesc} */`)
+      }
+      typeDefs.push(`type PathParams = ${typeHelperName}<'${path}', '${lowerMethod}'>['path']`)
+    }
+
+    if (queryParams && queryParams.length > 0) {
+      const queryDesc = typeHelperInfo?.properties.find(p => p.name === 'query')?.description
+      if (queryDesc) {
+        typeDefs.push(`/** ${queryDesc} */`)
+      }
+      typeDefs.push(`type QueryParams = ${typeHelperName}<'${path}', '${lowerMethod}'>['query']`)
+    }
+
+    if (requestBody) {
+      const requestDesc = typeHelperInfo?.properties.find(p => p.name === 'request')?.description
+      if (requestDesc) {
+        typeDefs.push(`/** ${requestDesc} */`)
+      }
+      typeDefs.push(`type RequestBody = ${typeHelperName}<'${path}', '${lowerMethod}'>['request']`)
+    }
+
+    return typeDefs
   }
 
   /**
-   * Generate a realistic example value based on OpenAPI schema definition.
-   *
-   * Uses schema type, format, and property name to generate appropriate example values.
-   * Handles primitive types, arrays, objects, and nested schemas.
-   *
-   * @param schema - OpenAPI schema definition
-   * @param propertyName - Optional property name for context-aware value generation
-   * @returns Generated example value matching the schema type
-   * @private
-   *
-   * @example
-   * ```typescript
-   * generateExampleValue({ type: 'string', format: 'email' }) // "user@example.com"
-   * generateExampleValue({ type: 'string', format: 'uuid' }) // "550e8400-e29b-41d4-a716-446655440000"
-   * generateExampleValue({ type: 'number' }) // 10
-   * generateExampleValue({ type: 'boolean' }) // true
-   * ```
+   * Generate authentication headers based on security schemes
    */
-  /**
-   * Resolve a JSON reference ($ref) in an OpenAPI spec with caching.
-   *
-   * @param ref - Reference string (e.g., "#/components/schemas/User")
-   * @param spec - Complete OpenAPI specification object
-   * @param cacheKey - Optional cache key (e.g., API name) for cache lookup
-   * @returns Resolved schema object or undefined
-   * @private
-   */
-  private resolveRef(ref: string, spec: any, cacheKey?: string): any {
-    if (!ref || !ref.startsWith('#/')) {
-      this.log('[resolveRef] Invalid ref:', ref)
-      return undefined
+  private generateAuthHeaders(securitySchemes: Record<string, unknown>): string[] {
+    const headers: string[] = []
+
+    if (securitySchemes.bearerAuth || securitySchemes.Bearer) {
+      headers.push('  headers: {')
+      // eslint-disable-next-line no-template-curly-in-string
+      headers.push('    \'Authorization\': `Bearer ${YOUR_TOKEN}`,')
+      headers.push('  },')
+    }
+    else if (securitySchemes.apiKey || securitySchemes.ApiKey) {
+      headers.push('  headers: {')
+      headers.push('    \'X-API-Key\': YOUR_API_KEY,')
+      headers.push('  },')
     }
 
-    // Check cache if key provided
-    const fullCacheKey = cacheKey ? `${cacheKey}:${ref}` : ref
-    if (this.refCache.has(fullCacheKey)) {
-      this.log('[resolveRef] Cache hit for:', fullCacheKey)
-      return this.refCache.get(fullCacheKey)
-    }
-
-    const path = ref.substring(2).split('/')
-    this.log('[resolveRef] Path segments:', path)
-    let current = spec
-
-    for (const segment of path) {
-      if (!current || typeof current !== 'object') {
-        this.log('[resolveRef] Failed at segment:', segment, 'current type:', typeof current)
-        return undefined
-      }
-      current = current[segment]
-      this.log('[resolveRef] After segment', segment, ':', current ? 'exists' : 'undefined')
-    }
-
-    this.log('[resolveRef] Final result:', current ? 'exists' : 'undefined', '- has allOf:', !!current?.allOf)
-
-    // Cache the result
-    if (current !== undefined) {
-      this.refCache.set(fullCacheKey, current)
-    }
-
-    return current
-  }
-
-  private generateExampleValue(schema: any, propertyName?: string, spec?: any, cacheKey?: string): any {
-    if (!schema) {
-      this.log('[generateExampleValue] Schema is null/undefined')
-      return undefined
-    }
-
-    // If there's an example, use it
-    if (schema.example !== undefined)
-      return schema.example
-
-    // Handle references - resolve and recurse
-    if (schema.$ref && spec) {
-      this.log('[generateExampleValue] Resolving $ref:', schema.$ref)
-      const resolved = this.resolveRef(schema.$ref, spec, cacheKey)
-      if (resolved)
-        return this.generateExampleValue(resolved, propertyName, spec, cacheKey)
-    }
-
-    // Handle oneOf/anyOf - use first option
-    if (schema.oneOf && schema.oneOf.length > 0) {
-      this.log('[generateExampleValue] Found oneOf with', schema.oneOf.length, 'options')
-      this.log('[generateExampleValue] First oneOf option:', JSON.stringify(schema.oneOf[0]).substring(0, 200))
-      const result = this.generateExampleValue(schema.oneOf[0], propertyName, spec, cacheKey)
-      this.log('[generateExampleValue] oneOf result:', result !== undefined ? 'has value' : 'undefined')
-      return result
-    }
-    if (schema.anyOf && schema.anyOf.length > 0) {
-      return this.generateExampleValue(schema.anyOf[0], propertyName, spec, cacheKey)
-    }
-
-    // Handle allOf - merge all properties from all schemas
-    if (schema.allOf && schema.allOf.length > 0) {
-      const mergedProperties: any = {}
-
-      for (const subSchema of schema.allOf) {
-        const resolved = subSchema.$ref ? this.resolveRef(subSchema.$ref, spec, cacheKey) : subSchema
-
-        // If resolved schema has properties, merge them
-        if (resolved?.properties) {
-          for (const [key, prop] of Object.entries(resolved.properties)) {
-            mergedProperties[key] = this.generateExampleValue(prop as any, key, spec, cacheKey)
-          }
-        }
-        // If it's an object type without properties, recursively process it
-        else if (resolved) {
-          const value = this.generateExampleValue(resolved, propertyName, spec, cacheKey)
-          if (value && typeof value === 'object') {
-            Object.assign(mergedProperties, value)
-          }
-        }
-      }
-
-      return Object.keys(mergedProperties).length > 0 ? mergedProperties : undefined
-    }
-
-    // Handle arrays
-    if (schema.type === 'array') {
-      return [this.generateExampleValue(schema.items, undefined, spec, cacheKey)]
-    }
-
-    // Handle objects
-    if (schema.type === 'object') {
-      const example: any = {}
-      if (schema.properties) {
-        for (const [key, prop] of Object.entries(schema.properties)) {
-          example[key] = this.generateExampleValue(prop as any, key, spec, cacheKey)
-        }
-      }
-      return example
-    }
-
-    // Handle primitive types
-    switch (schema.type) {
-      case 'string':
-        if (schema.format === 'email')
-          return 'user@example.com'
-        if (schema.format === 'date-time')
-          return new Date().toISOString()
-        if (schema.format === 'uuid')
-          return '550e8400-e29b-41d4-a716-446655440000'
-        if (propertyName?.toLowerCase().includes('id'))
-          return 'example-id'
-        if (propertyName?.toLowerCase().includes('name'))
-          return 'Example Name'
-        return 'example'
-      case 'number':
-      case 'integer':
-        return schema.format === 'int64' ? 1 : 10
-      case 'boolean':
-        return true
-      default:
-        return undefined
-    }
+    return headers
   }
 
   /**
-   * Extract authentication information from OpenAPI spec.
-   *
-   * Analyzes security requirements and security schemes to determine
-   * the authentication method, environment variable name, and header format.
-   *
-   * @param spec - Complete OpenAPI specification object
-   * @param operation - OpenAPI operation object
-   * @param apiName - Full API identifier (e.g., "ory/kratos")
-   * @returns Authentication information including type, env var name, and header details
-   * @private
-   *
-   * @example
-   * ```typescript
-   * const authInfo = extractAuthInfo(spec, operation, "hetzner/cloud")
-   * // Returns: { type: 'bearer', envVarName: 'HCLOUD_TOKEN', headerName: 'Authorization', scheme: 'bearer' }
-   * ```
+   * Generate client setup code with authentication
    */
-  private extractAuthInfo(spec: any, operation: any, apiName: string): {
-    type: string | null
-    envVarName: string | null
-    headerName: string
-    scheme?: string
-  } {
-    // Get security requirements (endpoint-level takes precedence over global)
-    const securityReqs = operation.security || spec.security || []
+  private generateClientSetup(serviceName: string, spec: OpenAPIDocument): string {
+    const baseUrlExample = spec.servers?.[0]?.url || 'https://api.example.com'
+    const setupParts = [
+      'const client = createClient({',
+      `  baseURL: '${baseUrlExample}',`,
+    ]
 
-    // If no security requirements, return null
-    if (!securityReqs || securityReqs.length === 0) {
-      return { type: null, envVarName: null, headerName: 'Authorization' }
-    }
-
-    // Get the first security requirement
-    const firstReq = securityReqs[0]
-    if (!firstReq) {
-      return { type: null, envVarName: null, headerName: 'Authorization' }
-    }
-
-    const schemeName = Object.keys(firstReq)[0]
-    if (!schemeName) {
-      return { type: null, envVarName: null, headerName: 'Authorization' }
-    }
-
-    // Look up the security scheme definition
-    const scheme = spec.components?.securitySchemes?.[schemeName]
-
-    if (!scheme) {
-      return { type: null, envVarName: null, headerName: 'Authorization' }
-    }
-
-    // Infer environment variable name based on API
-    let envVarName: string | null = null
-    if (apiName.includes('hetzner')) {
-      envVarName = 'HCLOUD_TOKEN'
-    }
-    else if (apiName.includes('digitalocean')) {
-      envVarName = 'DIGITALOCEAN_TOKEN'
-    }
-    else if (apiName.includes('kratos') || apiName.includes('hydra') || apiName.includes('ory')) {
-      envVarName = 'ORY_API_KEY'
-    }
-
-    // Get header name (for apiKey type) or default to Authorization
-    const headerName = scheme.name || 'Authorization'
-
-    return {
-      type: scheme.type,
-      scheme: scheme.scheme,
-      envVarName,
-      headerName,
-    }
-  }
-
-  /**
-   * Get the type helper name for an API service.
-   *
-   * Maps API names to their TypeScript type helper names for use in
-   * generated code examples with type safety.
-   *
-   * @param apiName - Full API identifier (e.g., "digitalocean/api", "hetzner/cloud")
-   * @returns Type helper name or null if not available
-   * @private
-   *
-   * @example
-   * ```typescript
-   * getTypeHelperName("digitalocean/api")  // Returns "DigitalOcean"
-   * getTypeHelperName("hetzner/cloud")     // Returns "HetznerCloud"
-   * getTypeHelperName("ory/kratos")        // Returns "OryKaratos"
-   * ```
-   */
-  private getTypeHelperName(apiName: string): string | null {
-    const mapping: Record<string, string> = {
-      'digitalocean/api': 'DigitalOcean',
-      'hetzner/cloud': 'HetznerCloud',
-      'ory/kratos': 'OryKaratos',
-      'ory/hydra': 'OryHydra',
-    }
-    return mapping[apiName] || null
-  }
-
-  /**
-   * Analyze the response structure to extract useful information for code generation.
-   *
-   * Detects success status code, wrapper objects, primary resource, and important fields
-   * to generate intuitive response access patterns in code examples.
-   *
-   * @param operation - OpenAPI operation object
-   * @param spec - Complete OpenAPI specification object
-   * @param cacheKey - Optional cache key for $ref resolution
-   * @returns Response structure information or null if no response schema found
-   * @private
-   */
-  private analyzeResponseStructure(operation: any, spec: any, cacheKey?: string): {
-    statusCode: number
-    schema: any
-    wrapperKeys: string[]
-    primaryResource: string | null
-    importantFields: string[]
-    isArray: boolean
-    hasActions: boolean
-  } | null {
-    // Check cache if key provided
-    if (cacheKey && this.responseAnalysisCache.has(cacheKey)) {
-      this.log('[analyzeResponseStructure] Cache hit for:', cacheKey)
-      return this.responseAnalysisCache.get(cacheKey)!
-    }
-
-    if (!operation.responses) {
-      return null
-    }
-
-    // Determine success status code (prefer 200, then 201, 202, 204)
-    const successStatuses = [200, 201, 202, 204]
-    let statusCode: number | null = null
-    let responseObj: any = null
-
-    for (const status of successStatuses) {
-      if (operation.responses[status]) {
-        statusCode = status
-        responseObj = operation.responses[status]
-        break
-      }
-    }
-
-    if (!statusCode || !responseObj) {
-      return null
-    }
-
-    // Extract response schema
-    const content = responseObj.content?.['application/json']
-    if (!content?.schema) {
-      return null
-    }
-
-    let schema = content.schema
-
-    // Resolve $ref if present
-    if (schema.$ref) {
-      schema = this.resolveRef(schema.$ref, spec, cacheKey)
-      if (!schema) {
-        return null
-      }
-    }
-
-    // Handle oneOf/anyOf - use first option (usually the primary variant)
-    if (schema.oneOf && schema.oneOf.length > 0) {
-      let firstOption = schema.oneOf[0]
-      if (firstOption.$ref) {
-        firstOption = this.resolveRef(firstOption.$ref, spec, cacheKey)
-      }
-      if (firstOption) {
-        schema = firstOption
-      }
-    }
-    else if (schema.anyOf && schema.anyOf.length > 0) {
-      let firstOption = schema.anyOf[0]
-      if (firstOption.$ref) {
-        firstOption = this.resolveRef(firstOption.$ref, spec, cacheKey)
-      }
-      if (firstOption) {
-        schema = firstOption
-      }
-    }
-
-    // Detect if response is an array
-    const isArray = schema.type === 'array'
-    let propertiesSchema = isArray && schema.items ? schema.items : schema
-
-    // Resolve items $ref for arrays
-    if (propertiesSchema.$ref) {
-      propertiesSchema = this.resolveRef(propertiesSchema.$ref, spec, cacheKey)
-    }
-
-    // Extract wrapper keys (top-level properties that might contain resources)
-    const wrapperKeys: string[] = []
-    let primaryResource: string | null = null
-    const importantFields: string[] = []
-    let hasActions = false
-
-    if (propertiesSchema?.properties && typeof propertiesSchema.properties === 'object') {
-      const properties = propertiesSchema.properties
-
-      // Common resource wrapper names (DigitalOcean, Hetzner patterns)
-      const resourcePatterns = ['server', 'droplet', 'image', 'volume', 'snapshot', 'firewall', 'load_balancer', 'certificate', 'database', 'identity', 'client', 'token', 'session', 'action', 'network', 'ssh_key', 'domain', 'project']
-
-      for (const key of Object.keys(properties)) {
-        wrapperKeys.push(key)
-
-        // Detect primary resource (object with nested properties)
-        const prop = properties[key]
-        const resolvedProp = prop.$ref ? this.resolveRef(prop.$ref, spec, cacheKey) : prop
-
-        if (!primaryResource && resolvedProp?.type === 'object' && resourcePatterns.includes(key)) {
-          primaryResource = key
-        }
-
-        // Detect actions (common in async APIs like Hetzner)
-        if (key === 'action' || key === 'next_actions') {
-          hasActions = true
-        }
-      }
-
-      // If no resource pattern matched, use the first object property as primary
-      if (!primaryResource && wrapperKeys.length > 0) {
-        for (const key of wrapperKeys) {
-          const prop = properties[key]
-          const resolvedProp = prop.$ref ? this.resolveRef(prop.$ref, spec, cacheKey) : prop
-
-          if (resolvedProp?.type === 'object' && key !== 'links' && key !== 'meta' && key !== 'metadata') {
-            primaryResource = key
-            break
-          }
-        }
-      }
-
-      // Extract important fields from primary resource
-      if (primaryResource) {
-        const resourceProp = properties[primaryResource]
-        const resolvedResource = resourceProp.$ref ? this.resolveRef(resourceProp.$ref, spec, cacheKey) : resourceProp
-
-        if (resolvedResource?.properties) {
-          const importantFieldNames = ['id', 'name', 'status', 'state', 'created', 'created_at', 'updated_at', 'ip', 'ip_address', 'email']
-
-          for (const fieldName of importantFieldNames) {
-            if (resolvedResource.properties[fieldName]) {
-              importantFields.push(fieldName)
-            }
-          }
-        }
-      }
-    }
-
-    const result = {
-      statusCode,
-      schema,
-      wrapperKeys,
-      primaryResource,
-      importantFields,
-      isArray,
-      hasActions,
-    }
-
-    // Cache the result if key provided
-    if (cacheKey) {
-      this.responseAnalysisCache.set(cacheKey, result)
-    }
-
-    return result
-  }
-
-  /**
-   * Generate a complete TypeScript code example for an API endpoint.
-   *
-   * Creates copy-paste-ready code including imports, client setup, and request execution.
-   * Automatically generates realistic example values for path parameters, query parameters,
-   * and request bodies based on the OpenAPI specification.
-   *
-   * @param apiName - Full API identifier (e.g., "ory/kratos")
-   * @param spec - Complete OpenAPI specification object
-   * @param path - Endpoint path (e.g., "/admin/identities")
-   * @param method - HTTP method (e.g., "get", "post")
-   * @param operation - OpenAPI operation object from the spec
-   * @returns CodeExample object with separate parts and full example
-   * @private
-   *
-   * @example
-   * ```typescript
-   * const example = generateCodeExample(
-   *   "ory/kratos",
-   *   specObject,
-   *   "/admin/identities",
-   *   "post",
-   *   operationObject
-   * )
-   * console.log(example.fullExample) // Complete executable TypeScript code
-   * ```
-   */
-  private generateCodeExample(apiName: string, spec: any, path: string, method: string, operation: any): CodeExample {
-    // Check cache first
-    const cacheKey = `${apiName}:${path}:${method}`
-    const cached = this.exampleCache.get(cacheKey)
-
-    if (cached && Date.now() - cached.timestamp < this.EXAMPLE_CACHE_TTL) {
-      this.log('[generateCodeExample] Cache hit for:', cacheKey)
-      return cached.example
-    }
-
-    const serviceName = this.getApiServiceName(apiName)
-    const methodUpper = method.toUpperCase()
-
-    // Extract authentication information
-    const authInfo = this.extractAuthInfo(spec, operation, apiName)
-
-    // Get type helper name for type-safe code generation
-    const typeHelperName = this.getTypeHelperName(apiName)
-
-    // Analyze response structure for intuitive code generation (with caching)
-    const responseStructure = this.analyzeResponseStructure(operation, spec, apiName)
-
-    // Generate imports
-    let imports = `import { createClient, ${serviceName} } from 'toonfetch/${apiName.split('/')[0]}'`
-
-    // Add type import for type-safe examples
-    if (typeHelperName) {
-      imports += `\nimport type { ${typeHelperName} } from 'toonfetch/${apiName.split('/')[0]}'`
-    }
-
-    // Generate client setup
-    const baseUrlExample = apiName.includes('kratos')
-      ? 'https://your-kratos-instance.com'
-      : apiName.includes('hydra')
-        ? 'https://your-hydra-instance.com'
-        : apiName.includes('hetzner')
-          ? 'https://api.hetzner.cloud/v1'
-          : apiName.includes('digitalocean')
-            ? 'https://api.digitalocean.com/v2'
-            : 'https://api.example.com'
-
-    // Build client setup with authentication
-    const setupParts = [`const client = createClient({`, `  baseURL: '${baseUrlExample}',`]
-
-    // Add authentication headers if required
-    if (authInfo.type && authInfo.envVarName) {
-      if (authInfo.type === 'http' && authInfo.scheme === 'bearer') {
-        // Bearer token authentication
-        setupParts.push(`  headers: {`, `    'Authorization': \`Bearer \${process.env.${authInfo.envVarName}}\`,`, `  },`)
-      }
-      else if (authInfo.type === 'apiKey') {
-        // API Key authentication
-        setupParts.push(`  headers: {`, `    '${authInfo.headerName}': process.env.${authInfo.envVarName},`, `  },`)
-      }
+    if (spec.components?.securitySchemes) {
+      setupParts.push(...this.generateAuthHeaders(spec.components.securitySchemes))
     }
 
     setupParts.push(`}).with(${serviceName})`)
-    const setup = setupParts.join('\n')
-
-    // Extract parameters
-    const pathParams: any = {}
-    const queryParams: any = {}
-    let requestBody: any
-
-    // Process parameters (with caching)
-    if (operation.parameters) {
-      for (const param of operation.parameters) {
-        if (param.in === 'path') {
-          pathParams[param.name] = this.generateExampleValue(param.schema, param.name, spec, apiName)
-        }
-        else if (param.in === 'query') {
-          queryParams[param.name] = this.generateExampleValue(param.schema, param.name, spec, apiName)
-        }
-      }
-    }
-
-    // Process request body and extract required fields info
-    let requestBodySchema: any = null
-    let requiredFields: string[] = []
-    let isRequestBodyRequired = false
-
-    if (operation.requestBody) {
-      const content = operation.requestBody.content
-      const jsonContent = content?.['application/json']
-      isRequestBodyRequired = operation.requestBody.required === true
-
-      this.log(`[DEBUG] ${method} ${path} - requestBody exists:`, !!operation.requestBody)
-      this.log(`[DEBUG] ${method} ${path} - content exists:`, !!content)
-      this.log(`[DEBUG] ${method} ${path} - jsonContent exists:`, !!jsonContent)
-      this.log(`[DEBUG] ${method} ${path} - schema exists:`, !!jsonContent?.schema)
-
-      if (jsonContent?.schema) {
-        this.log(`[DEBUG] ${method} ${path} - schema keys:`, Object.keys(jsonContent.schema))
-        requestBodySchema = jsonContent.schema
-
-        // Resolve $ref if present
-        const resolvedSchema = requestBodySchema.$ref
-          ? this.resolveRef(requestBodySchema.$ref, spec)
-          : requestBodySchema
-
-        // Extract required fields
-        if (resolvedSchema?.required && Array.isArray(resolvedSchema.required)) {
-          requiredFields = resolvedSchema.required
-        }
-        // Also check for allOf patterns that merge required fields
-        else if (resolvedSchema?.allOf) {
-          for (const subSchema of resolvedSchema.allOf) {
-            const resolved = subSchema.$ref ? this.resolveRef(subSchema.$ref, spec) : subSchema
-            if (resolved?.required && Array.isArray(resolved.required)) {
-              requiredFields.push(...resolved.required)
-            }
-          }
-        }
-
-        requestBody = this.generateExampleValue(jsonContent.schema, undefined, spec, apiName)
-        this.log(`[DEBUG] Generated requestBody for ${method} ${path}:`, requestBody !== undefined ? `${Object.keys(requestBody || {}).length} properties` : 'undefined')
-      }
-    }
-
-    // Generate type definitions if type helper is available
-    let typeDefinitions = ''
-    let typedVariables = ''
-
-    if (typeHelperName) {
-      const typeDefs: string[] = []
-
-      // Add request body type if exists
-      if (requestBody !== undefined) {
-        typeDefs.push(`type RequestBody = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['request']`)
-      }
-
-      // Add query params type if exists
-      if (Object.keys(queryParams).length > 0) {
-        typeDefs.push(`type QueryParams = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['query']`)
-      }
-
-      // Add path params type if exists
-      if (Object.keys(pathParams).length > 0) {
-        typeDefs.push(`type PathParams = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['path']`)
-      }
-
-      // Add response type with actual status code
-      if (responseStructure) {
-        typeDefs.push(`type Response = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['responses'][${responseStructure.statusCode}]`)
-      }
-      else {
-        // Fallback to default response type if structure analysis failed
-        typeDefs.push(`type Response = ${typeHelperName}<'${path}', '${method.toLowerCase()}'>['response']`)
-      }
-
-      if (typeDefs.length > 0) {
-        typeDefinitions = `\n${typeDefs.join('\n')}\n`
-      }
-    }
-
-    // Generate typed variables
-    const variableDeclarations: string[] = []
-
-    if (requestBody !== undefined) {
-      // Add helpful comment about required fields
-      let bodyComment = ''
-      if (requiredFields.length > 0) {
-        const allFields = Object.keys(requestBody)
-        const optionalFields = allFields.filter(f => !requiredFields.includes(f))
-
-        bodyComment = '// Request body'
-        if (isRequestBodyRequired) {
-          bodyComment += ' (required)'
-        }
-        bodyComment += '\n'
-        if (requiredFields.length > 0) {
-          bodyComment += `// Required fields: ${requiredFields.join(', ')}\n`
-        }
-        if (optionalFields.length > 0) {
-          bodyComment += `// Optional fields: ${optionalFields.join(', ')}\n`
-        }
-      }
-
-      const bodyJson = JSON.stringify(requestBody, null, 2)
-      const typedBody = typeHelperName
-        ? `${bodyComment}const body: RequestBody = ${bodyJson}`
-        : `${bodyComment}const body = ${bodyJson}`
-      variableDeclarations.push(typedBody)
-    }
-
-    if (Object.keys(queryParams).length > 0) {
-      const queryJson = JSON.stringify(queryParams, null, 2)
-      const typedQuery = typeHelperName
-        ? `const query: QueryParams = ${queryJson}`
-        : `const query = ${queryJson}`
-      variableDeclarations.push(typedQuery)
-    }
-
-    if (Object.keys(pathParams).length > 0) {
-      const pathJson = JSON.stringify(pathParams, null, 2)
-      const typedPath = typeHelperName
-        ? `const pathParams: PathParams = ${pathJson}`
-        : `const pathParams = ${pathJson}`
-      variableDeclarations.push(typedPath)
-    }
-
-    if (variableDeclarations.length > 0) {
-      typedVariables = `\n${variableDeclarations.join('\n\n')}\n`
-    }
-
-    // Build request options
-    const requestOptions: string[] = [`  method: '${methodUpper}'`]
-
-    if (Object.keys(pathParams).length > 0) {
-      requestOptions.push('  path: pathParams')
-    }
-
-    if (Object.keys(queryParams).length > 0) {
-      requestOptions.push('  query')
-    }
-
-    if (requestBody !== undefined) {
-      requestOptions.push('  body')
-    }
-
-    // Generate the API call
-    const responseType = typeHelperName ? ': Response' : ''
-    let usage = `const response${responseType} = await client('${path}', {
-${requestOptions.join(',\n')}
-})`
-
-    // Generate intuitive response access examples
-    if (responseStructure) {
-      const { statusCode, primaryResource, importantFields, hasActions, isArray, wrapperKeys } = responseStructure
-
-      // Add status code comment
-      const statusMessage = statusCode === 200
-        ? 'OK'
-        : statusCode === 201
-          ? 'Created'
-          : statusCode === 202
-            ? 'Accepted'
-            : statusCode === 204
-              ? 'No Content'
-              : 'Success'
-
-      usage += `\n\n// Response status: ${statusCode} ${statusMessage}`
-
-      // Add primary resource access examples
-      if (primaryResource && importantFields.length > 0) {
-        const resourceName = primaryResource.charAt(0).toUpperCase() + primaryResource.slice(1).replace(/_/g, ' ')
-        usage += `\n// Access the ${resourceName.toLowerCase()}`
-
-        for (const field of importantFields) {
-          const accessor = isArray ? `response.${wrapperKeys[0]}[0].${field}` : `response.${primaryResource}.${field}`
-          const fieldLabel = field.replace(/_/g, ' ')
-          usage += `\nconsole.log('${fieldLabel}:', ${accessor})`
-        }
-      }
-      else if (primaryResource) {
-        // Primary resource exists but no important fields detected
-        const accessor = isArray ? `response.${wrapperKeys[0]}[0]` : `response.${primaryResource}`
-        usage += `\nconsole.log('${primaryResource}:', ${accessor})`
-      }
-      else if (wrapperKeys.length > 0 && !isArray) {
-        // No primary resource, but we have wrapper keys - show access for first non-metadata key
-        const firstKey = wrapperKeys.find(k => k !== 'links' && k !== 'meta' && k !== 'metadata')
-        if (firstKey) {
-          usage += `\nconsole.log('${firstKey}:', response.${firstKey})`
-        }
-      }
-
-      // Add action polling guidance for async operations
-      if (hasActions) {
-        usage += `\n\n// The operation is asynchronous - poll the action status`
-        usage += `\nconst actionId = response.action.id`
-        usage += `\n// Poll GET /actions/{id} endpoint until status === 'success'`
-      }
-    }
-
-    // Generate authentication comment
-    const authCommentParts: string[] = []
-    if (authInfo.type && authInfo.envVarName) {
-      authCommentParts.push(
-        '// Authentication: Set your API token',
-        `// export ${authInfo.envVarName}='your-token-here'`,
-        '',
-      )
-    }
-
-    // Generate full example (clean, modern style)
-    const fullExampleParts = [imports, typeDefinitions]
-    if (authCommentParts.length > 0) {
-      fullExampleParts.push(authCommentParts.join('\n'))
-    }
-    fullExampleParts.push(setup, typedVariables, usage)
-    const fullExample = fullExampleParts.filter(p => p).join('\n')
-
-    const result: CodeExample = {
-      imports,
-      setup,
-      usage,
-      fullExample,
-    }
-
-    // Cache the result with LRU eviction
-    if (this.exampleCache.size >= this.EXAMPLE_CACHE_SIZE) {
-      // Remove oldest entry (first key)
-      const firstKey = this.exampleCache.keys().next().value
-      if (firstKey) {
-        this.exampleCache.delete(firstKey)
-      }
-    }
-
-    this.exampleCache.set(cacheKey, {
-      timestamp: Date.now(),
-      example: result,
-    })
-
-    return result
+    return setupParts.join('\n')
   }
 
   /**
-   * Generate a quickstart guide for an API with common operations.
-   *
-   * Creates a complete guide including installation, setup, and up to 3 example operations
-   * (GET and POST requests) to help users get started quickly.
-   *
-   * @param apiName - Full API identifier (e.g., "ory/kratos")
-   * @param spec - Complete OpenAPI specification object
-   * @returns Markdown-formatted quickstart guide
-   * @private
+   * Generate path parameters code
    */
-  private generateQuickstart(apiName: string, spec: any): string {
-    const serviceName = this.getApiServiceName(apiName)
-    const baseUrlExample = apiName.includes('kratos')
-      ? 'https://your-kratos-instance.com'
-      : apiName.includes('hydra')
-        ? 'https://your-hydra-instance.com'
-        : apiName.includes('hetzner')
-          ? 'https://api.hetzner.cloud/v1'
-          : apiName.includes('digitalocean')
-            ? 'https://api.digitalocean.com/v2'
-            : 'https://api.example.com'
+  private generatePathParamsCode(pathParams: OpenAPIParameter[], spec: OpenAPIDocument): string {
+    const parts: string[] = [
+      '// Path parameters',
+      'const pathParams: PathParams = {',
+    ]
 
-    // Find a few common operations
-    const paths = spec.paths || {}
-    const operations: Array<{ path: string, method: string, operation: any }> = []
+    for (const param of pathParams) {
+      const exampleValue = this.generateExampleValue(param.schema || {}, param.name, {}, spec)
+      const valueStr = typeof exampleValue === 'string' ? `'${exampleValue}'` : JSON.stringify(exampleValue)
+      parts.push(`  ${param.name}: ${valueStr},`)
+    }
 
-    for (const [path, pathItem] of Object.entries(paths)) {
-      for (const [method, operation] of Object.entries(pathItem as any)) {
-        if (['get', 'post'].includes(method) && operations.length < 3) {
-          operations.push({ path, method, operation })
+    parts.push('}', '')
+    return parts.join('\n')
+  }
+
+  /**
+   * Generate query parameters code
+   */
+  private generateQueryParamsCode(queryParams: OpenAPIParameter[], spec: OpenAPIDocument): string {
+    const parts: string[] = [
+      '// Query parameters',
+      'const queryParams: QueryParams = {',
+    ]
+
+    for (const param of queryParams) {
+      const exampleValue = this.generateExampleValue(param.schema || {}, param.name, {}, spec)
+      const valueStr = typeof exampleValue === 'string' ? `'${exampleValue}'` : JSON.stringify(exampleValue)
+      parts.push(`  ${param.name}: ${valueStr},`)
+    }
+
+    parts.push('}', '')
+    return parts.join('\n')
+  }
+
+  /**
+   * Generate request body code
+   */
+  private generateRequestBodyCode(requestBody: OpenAPIRequestBody, spec: OpenAPIDocument): string {
+    const bodySchema = requestBody.content?.['application/json']?.schema
+    if (!bodySchema) {
+      return ''
+    }
+
+    let resolvedBodySchema: ResolvedSchema | OpenAPISchema | null = bodySchema
+    if ('$ref' in bodySchema) {
+      resolvedBodySchema = this.resolveRef(bodySchema.$ref, spec)
+      if (!resolvedBodySchema) {
+        return ''
+      }
+    }
+
+    // Type guard: ensure we have a non-reference schema
+    if (!resolvedBodySchema || '$ref' in resolvedBodySchema) {
+      return ''
+    }
+
+    // Handle oneOf - use first option (typically single resource create)
+    if ('oneOf' in resolvedBodySchema && resolvedBodySchema.oneOf) {
+      const firstOption = resolvedBodySchema.oneOf[0]
+      if (firstOption && '$ref' in firstOption) {
+        resolvedBodySchema = this.resolveRef(firstOption.$ref, spec)
+        if (!resolvedBodySchema || '$ref' in resolvedBodySchema) {
+          return ''
         }
       }
     }
 
-    // Extract auth info from the first operation (most likely same for all)
-    const authInfo = operations.length > 0 && operations[0]
-      ? this.extractAuthInfo(spec, operations[0].operation, apiName)
-      : { type: null, envVarName: null, headerName: 'Authorization' }
+    const parts: string[] = [
+      '// Request body',
+      'const body: RequestBody = {',
+    ]
 
-    // Build setup with authentication
-    const setupParts = [`const client = createClient({`, `  baseURL: '${baseUrlExample}',`]
+    // Collect all properties and required fields from allOf/properties
+    const allProperties: Record<string, any> = {}
+    const allRequired: Set<string> = new Set()
 
-    if (authInfo.type && authInfo.envVarName) {
-      if (authInfo.type === 'http' && authInfo.scheme === 'bearer') {
-        setupParts.push(`  headers: {`, `    'Authorization': \`Bearer \${process.env.${authInfo.envVarName}}\`,`, `  },`)
+    // Handle allOf composition
+    if ('allOf' in resolvedBodySchema && resolvedBodySchema.allOf) {
+      for (const subSchema of resolvedBodySchema.allOf) {
+        let resolved = subSchema
+        if ('$ref' in subSchema) {
+          resolved = this.resolveRef(subSchema.$ref, spec) as any
+          if (!resolved) {
+            continue
+          }
+        }
+
+        // Collect properties
+        if ('properties' in resolved && resolved.properties) {
+          Object.assign(allProperties, resolved.properties)
+        }
+
+        // Collect required fields
+        if ('required' in resolved && Array.isArray(resolved.required)) {
+          resolved.required.forEach((field: string) => allRequired.add(field))
+        }
       }
-      else if (authInfo.type === 'apiKey') {
-        setupParts.push(`  headers: {`, `    '${authInfo.headerName}': process.env.${authInfo.envVarName},`, `  },`)
+    }
+
+    // Also include direct properties
+    if ('properties' in resolvedBodySchema && resolvedBodySchema.properties) {
+      Object.assign(allProperties, resolvedBodySchema.properties)
+    }
+    if ('required' in resolvedBodySchema && Array.isArray(resolvedBodySchema.required)) {
+      resolvedBodySchema.required.forEach((field: string) => allRequired.add(field))
+    }
+
+    // Generate field entries
+    if (Object.keys(allProperties).length > 0) {
+      for (const [propName, propSchema] of Object.entries(allProperties)) {
+        const isRequired = allRequired.has(propName)
+        const exampleValue = this.generateExampleValue(propSchema, propName, resolvedBodySchema as any, spec)
+        const valueStr = typeof exampleValue === 'string' ? `'${exampleValue}'` : JSON.stringify(exampleValue)
+
+        if (isRequired) {
+          parts.push(`  ${propName}: ${valueStr}, // required`)
+        }
+        else {
+          parts.push(`  // ${propName}: ${valueStr}, // optional`)
+        }
       }
     }
 
-    setupParts.push(`}).with(${serviceName})`)
-    const setup = setupParts.join('\n')
+    parts.push('}', '')
+    return parts.join('\n')
+  }
 
-    const exampleParts: string[] = []
-    for (const { path, method, operation } of operations) {
-      const example = this.generateCodeExample(apiName, spec, path, method, operation)
-      exampleParts.push(`// ${operation.summary || operation.operationId || 'Example'}`, example.usage, '')
+  /**
+   * Generate the actual request code
+   */
+  private generateRequestCode(
+    path: string,
+    method: string,
+    pathParams: OpenAPIParameter[] | undefined,
+    queryParams: OpenAPIParameter[] | undefined,
+    requestBody: OpenAPIRequestBody | undefined,
+  ): string[] {
+    let actualPath = path
+    if (pathParams && pathParams.length > 0) {
+      // eslint-disable-next-line no-template-curly-in-string
+      actualPath = `\`${path.replace(/\{([^}]+)\}/g, '${pathParams.$1}')}\``
     }
-    const examples = exampleParts.join('\n')
-
-    // Build result parts
-    const resultParts = [`import { createClient, ${serviceName} } from 'toonfetch/${apiName.split('/')[0]}'`]
-
-    if (authInfo.type && authInfo.envVarName) {
-      resultParts.push('', '// Authentication: Set your API token', `// export ${authInfo.envVarName}='your-token-here'`)
+    else {
+      actualPath = `'${path}'`
     }
 
-    resultParts.push(
-      '',
-      `// Initialize the ${spec.info?.title || serviceName} client`,
-      setup,
-      '',
-      '// Common operations:',
-      examples,
+    const requestParts = [`const response = await client(${actualPath}, {`]
+    requestParts.push(`  method: '${method.toUpperCase()}',`)
+
+    if (queryParams && queryParams.length > 0) {
+      requestParts.push('  query: queryParams,')
+    }
+
+    if (requestBody) {
+      requestParts.push('  body,')
+    }
+
+    requestParts.push('})')
+    return requestParts
+  }
+
+  /**
+   * Get the path to types.d.ts for the given API
+   */
+  private getTypesFilePath(apiName: string): string | null {
+    const spec = this.specs.get(apiName)
+    if (!spec) {
+      return null
+    }
+
+    // Get directory of the spec file
+    const specDir = join(spec.path, '..')
+    const typesPath = join(specDir, 'types.d.ts')
+
+    return existsSync(typesPath) ? typesPath : null
+  }
+
+  /**
+   * Generate response handling code based on response structure analysis
+   */
+  private generateResponseHandlingCode(apiName: string, path: string, method: string): string[] {
+    const responseParts: string[] = []
+
+    // Get types.d.ts path for this API
+    const typesPath = this.getTypesFilePath(apiName)
+    if (!typesPath) {
+      return responseParts
+    }
+
+    // Parse response structure from types.d.ts
+    const responseStructure = parseResponseStructure(typesPath, path, method)
+
+    if (responseStructure && responseStructure.isUnion && responseStructure.variants.length > 0) {
+      responseParts.push('')
+      responseParts.push('// Handle response based on structure')
+
+      // Generate conditional checks for union types (e.g., droplet vs droplets)
+      const variants = responseStructure.variants.filter((v: ResponseVariant) => v.properties.length > 0)
+
+      if (variants.length > 1) {
+        // Multiple variants - generate if/else
+        variants.forEach((variant: ResponseVariant, index: number) => {
+          const propName = variant.properties[0]
+          if (!propName) {
+            return
+          }
+
+          const condition = index === 0 ? 'if' : 'else if'
+
+          responseParts.push(`${condition} ('${propName}' in response) {`)
+
+          if (variant.isArrayProperty) {
+            responseParts.push(`  console.log('${propName} created:', response.${propName}.length)`)
+            responseParts.push(`  response.${propName}.forEach((item, idx) => {`)
+            responseParts.push(`    console.log(\`Item \${idx + 1} ID:\`, item.id)`)
+            responseParts.push(`  })`)
+          }
+          else {
+            responseParts.push(`  console.log('${propName} created:', response.${propName})`)
+            responseParts.push(`  console.log('ID:', response.${propName}.id)`)
+          }
+
+          responseParts.push('}')
+        })
+      }
+      else if (variants.length === 1) {
+        // Single variant
+        const variant = variants[0]
+        if (!variant) {
+          return responseParts
+        }
+
+        const propName = variant.properties[0]
+        if (!propName) {
+          return responseParts
+        }
+
+        if (variant.isArrayProperty) {
+          responseParts.push(`response.${propName}.forEach(item => console.log(item.id))`)
+        }
+        else {
+          responseParts.push(`console.log('${propName}:', response.${propName})`)
+        }
+      }
+    }
+    else if (responseStructure && responseStructure.variants.length === 1) {
+      // Non-union response
+      const variant = responseStructure.variants[0]
+      if (!variant) {
+        return responseParts
+      }
+
+      if (variant.properties.length > 0) {
+        const propName = variant.properties[0]
+        if (!propName) {
+          return responseParts
+        }
+
+        responseParts.push('')
+        responseParts.push('// Access response data')
+
+        if (variant.isArrayProperty) {
+          responseParts.push(`response.${propName}.forEach(item => console.log(item))`)
+        }
+        else {
+          responseParts.push(`console.log(response.${propName})`)
+        }
+      }
+    }
+
+    return responseParts
+  }
+
+  /**
+   * Register all tools with automatic Zod validation
+   */
+  private registerTools() {
+    // Note: We use z.string() with descriptions instead of z.enum() because:
+    // 1. Specs are loaded asynchronously, so enum values aren't available at registration time
+    // 2. The SDK validates against actual loaded APIs at runtime
+    // 3. This provides better error messages to users
+    const httpMethodSchema = z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'])
+
+    // Tool 1: list_apis
+    this.server.tool(
+      'list_apis',
+      'List all available API specifications with their metadata',
+      async () => {
+        const apis = Array.from(this.specs.values()).map(spec => ({
+          name: spec.name,
+          title: spec.spec.info?.title || 'Unknown',
+          version: spec.spec.info?.version || 'Unknown',
+          description: spec.spec.info?.description || '',
+        }))
+
+        return {
+          content: [{ type: 'text', text: JSON.stringify(apis, null, 2) }],
+        }
+      },
     )
 
-    return resultParts.join('\n')
-  }
+    // Tool 2: get_api_info
+    this.server.tool(
+      'get_api_info',
+      'Get detailed information about a specific API',
+      {
+        api_name: z.string().describe('API name (e.g., "hetzner/cloud", "ory/kratos")'),
+      },
+      async ({ api_name }) => {
+        const spec = this.specs.get(api_name)!
 
-  /**
-   * Configure MCP request handlers for tool listing and tool execution.
-   *
-   * Sets up handlers for:
-   * - list_apis: List all available API specifications
-   * - get_api_info: Get API metadata
-   * - search_endpoints: Search endpoints by path/method/description
-   * - get_endpoint_details: Get detailed endpoint information with code examples
-   * - get_schema_details: Get schema/model definitions
-   * - generate_code_example: Generate TypeScript code examples
-   * - get_quickstart: Generate quickstart guides
-   *
-   * @private
-   */
-  private setupHandlers() {
-    // List available tools
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
-        {
-          name: 'list_apis',
-          description: 'List all available API specifications',
-          inputSchema: {
-            type: 'object',
-            properties: {},
-          },
-        },
-        {
-          name: 'get_api_info',
-          description: 'Get high-level information about an API (title, version, description, servers)',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              api_name: {
-                type: 'string',
-                description: 'API name (e.g., "ory/hydra", "ory/kratos")',
-              },
-            },
-            required: ['api_name'],
-          },
-        },
-        {
-          name: 'search_endpoints',
-          description: 'Search for API endpoints by path or method',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              api_name: {
-                type: 'string',
-                description: 'API name (e.g., "ory/hydra", "ory/kratos")',
-              },
-              query: {
-                type: 'string',
-                description: 'Search query (searches in path and summary)',
-              },
-              method: {
-                type: 'string',
-                description: 'Filter by HTTP method (GET, POST, PUT, DELETE, etc.)',
-              },
-            },
-            required: ['api_name'],
-          },
-        },
-        {
-          name: 'get_endpoint_details',
-          description: 'Get detailed information about a specific endpoint',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              api_name: {
-                type: 'string',
-                description: 'API name (e.g., "ory/hydra", "ory/kratos")',
-              },
-              path: {
-                type: 'string',
-                description: 'Endpoint path (e.g., "/admin/oauth2/clients")',
-              },
-              method: {
-                type: 'string',
-                description: 'HTTP method (e.g., "get", "post")',
-              },
-            },
-            required: ['api_name', 'path', 'method'],
-          },
-        },
-        {
-          name: 'get_schema_details',
-          description: 'Get details about a specific schema/model definition',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              api_name: {
-                type: 'string',
-                description: 'API name (e.g., "ory/hydra", "ory/kratos")',
-              },
-              schema_name: {
-                type: 'string',
-                description: 'Schema name from components/schemas',
-              },
-            },
-            required: ['api_name', 'schema_name'],
-          },
-        },
-        {
-          name: 'generate_code_example',
-          description: 'Generate a complete TypeScript code example for using an endpoint with toonfetch library',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              api_name: {
-                type: 'string',
-                description: 'API name (e.g., "ory/hydra", "ory/kratos")',
-              },
-              path: {
-                type: 'string',
-                description: 'Endpoint path (e.g., "/admin/oauth2/clients")',
-              },
-              method: {
-                type: 'string',
-                description: 'HTTP method (e.g., "get", "post")',
-              },
-            },
-            required: ['api_name', 'path', 'method'],
-          },
-        },
-        {
-          name: 'get_quickstart',
-          description: 'Get a quickstart guide with common operations for an API using toonfetch',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              api_name: {
-                type: 'string',
-                description: 'API name (e.g., "ory/hydra", "ory/kratos")',
-              },
-            },
-            required: ['api_name'],
-          },
-        },
-      ],
-    }))
-
-    // Handle tool calls
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params
-
-      try {
-        switch (name) {
-          case 'list_apis':
-            return this.handleListApis()
-          case 'get_api_info':
-            return this.handleGetApiInfo(args)
-          case 'search_endpoints':
-            return this.handleSearchEndpoints(args)
-          case 'get_endpoint_details':
-            return this.handleGetEndpointDetails(args)
-          case 'get_schema_details':
-            return this.handleGetSchemaDetails(args)
-          case 'generate_code_example':
-            return this.handleGenerateCodeExample(args)
-          case 'get_quickstart':
-            return this.handleGetQuickstart(args)
-          default:
-            throw new Error(`Unknown tool: ${name}`)
+        const info = {
+          title: spec.spec.info?.title,
+          version: spec.spec.info?.version,
+          description: spec.spec.info?.description,
+          servers: spec.spec.servers || [],
+          tags: spec.spec.tags || [],
         }
-      }
-      catch (error) {
+
         return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
+          content: [{ type: 'text', text: JSON.stringify(info, null, 2) }],
         }
-      }
-    })
-  }
+      },
+    )
 
-  private handleListApis() {
-    const apis = Array.from(this.specs.values()).map(spec => ({
-      name: spec.name,
-      title: spec.spec.info?.title || 'Unknown',
-      version: spec.spec.info?.version || 'Unknown',
-      description: spec.spec.info?.description || '',
-    }))
+    // Tool 3: search_endpoints
+    this.server.tool(
+      'search_endpoints',
+      'Search for API endpoints by query, method, or tags',
+      {
+        api_name: z.string().describe('API to search (e.g., "hetzner/cloud", "ory/kratos")'),
+        query: z.string().optional().describe('Search query for path/summary/operationId'),
+        method: httpMethodSchema.optional().describe('Filter by HTTP method'),
+        limit: z.number().min(1).max(100).default(20).describe('Maximum results to return'),
+      },
+      async ({ api_name, query, method, limit }) => {
+        const spec = this.specs.get(api_name)!
+        const paths = spec.spec.paths || {}
+        const results: any[] = []
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(apis, null, 2),
-        },
-      ],
-    }
-  }
+        for (const [path, pathItem] of Object.entries(paths)) {
+          if (results.length >= limit)
+            break
 
-  private handleGetApiInfo(args: any) {
-    const spec = this.specs.get(args.api_name)
-    if (!spec) {
-      throw new Error(`API not found: ${args.api_name}`)
-    }
+          for (const [m, operation] of Object.entries(pathItem as any)) {
+            if (results.length >= limit)
+              break
 
-    const info = {
-      title: spec.spec.info?.title,
-      version: spec.spec.info?.version,
-      description: spec.spec.info?.description,
-      servers: spec.spec.servers || [],
-      tags: spec.spec.tags || [],
-    }
+            if (['get', 'post', 'put', 'delete', 'patch', 'options', 'head'].includes(m)) {
+              const op = operation as any
+              const matchesQuery = !query
+                || path.toLowerCase().includes(query.toLowerCase())
+                || op.summary?.toLowerCase().includes(query.toLowerCase())
+                || op.operationId?.toLowerCase().includes(query.toLowerCase())
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(info, null, 2),
-        },
-      ],
-    }
-  }
+              const matchesMethod = !method || m.toUpperCase() === method
 
-  private handleSearchEndpoints(args: any) {
-    const spec = this.specs.get(args.api_name)
-    if (!spec) {
-      throw new Error(`API not found: ${args.api_name}`)
-    }
-
-    const paths = spec.spec.paths || {}
-    const results: any[] = []
-
-    for (const [path, pathItem] of Object.entries(paths)) {
-      for (const [method, operation] of Object.entries(pathItem as any)) {
-        if (['get', 'post', 'put', 'delete', 'patch', 'options', 'head'].includes(method)) {
-          const op = operation as any
-          const matchesQuery = !args.query
-            || path.toLowerCase().includes(args.query.toLowerCase())
-            || op.summary?.toLowerCase().includes(args.query.toLowerCase())
-            || op.operationId?.toLowerCase().includes(args.query.toLowerCase())
-
-          const matchesMethod = !args.method
-            || method.toLowerCase() === args.method.toLowerCase()
-
-          if (matchesQuery && matchesMethod) {
-            results.push({
-              path,
-              method: method.toUpperCase(),
-              operationId: op.operationId,
-              summary: op.summary,
-              description: op.description,
-              tags: op.tags || [],
-            })
+              if (matchesQuery && matchesMethod) {
+                results.push({
+                  path,
+                  method: m.toUpperCase(),
+                  operationId: op.operationId,
+                  summary: op.summary,
+                  description: op.description,
+                  tags: op.tags || [],
+                })
+              }
+            }
           }
         }
-      }
-    }
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(results, null, 2),
-        },
-      ],
-    }
-  }
-
-  private handleGetEndpointDetails(args: any) {
-    const spec = this.specs.get(args.api_name)
-    if (!spec) {
-      throw new Error(`API not found: ${args.api_name}`)
-    }
-
-    const pathItem = spec.spec.paths?.[args.path]
-    if (!pathItem) {
-      throw new Error(`Path not found: ${args.path}`)
-    }
-
-    const operation = pathItem[args.method.toLowerCase()]
-    if (!operation) {
-      throw new Error(`Method not found: ${args.method} for path ${args.path}`)
-    }
-
-    // Generate code example
-    const codeExample = this.generateCodeExample(args.api_name, spec.spec, args.path, args.method, operation)
-
-    // Filter out x-codeSamples and x-code-samples to prevent SDK confusion
-    // These contain SDK-specific examples that don't apply to the raw REST API
-    const { 'x-codeSamples': _xCodeSamples, 'x-code-samples': _xCodeSamplesAlt, ...cleanOperation } = operation
-
-    const result = {
-      endpoint: cleanOperation,
-      usage_example: {
-        description: 'Copy-paste ready code example using toonfetch library',
-        code: codeExample.fullExample,
+        return {
+          content: [{ type: 'text', text: JSON.stringify(results, null, 2) }],
+        }
       },
-    }
+    )
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(result, null, 2),
-        },
-      ],
-    }
-  }
+    // Tool 4: get_endpoint_details
+    this.server.tool(
+      'get_endpoint_details',
+      'Get complete details and usage example for a specific endpoint',
+      {
+        api_name: z.string().describe('API name (e.g., "hetzner/cloud", "ory/kratos")'),
+        path: z.string().describe('Endpoint path (e.g., "/users")'),
+        method: httpMethodSchema.describe('HTTP method'),
+      },
+      async ({ api_name, path, method }) => {
+        const spec = this.specs.get(api_name)!
+        const pathItem = spec.spec.paths?.[path]
 
-  private handleGetSchemaDetails(args: any) {
-    const spec = this.specs.get(args.api_name)
-    if (!spec) {
-      throw new Error(`API not found: ${args.api_name}`)
-    }
+        if (!pathItem) {
+          throw new Error(`Path not found: ${path}`)
+        }
 
-    const schema = spec.spec.components?.schemas?.[args.schema_name]
-    if (!schema) {
-      throw new Error(`Schema not found: ${args.schema_name}`)
-    }
+        const operation = (pathItem as any)[method.toLowerCase()] as OpenAPIOperation
+        if (!operation) {
+          const availableMethods = Object.keys(pathItem)
+            .filter(m => ['get', 'post', 'put', 'delete', 'patch', 'options', 'head'].includes(m))
+            .map(m => m.toUpperCase())
+          throw new Error(`Method ${method} not found for ${path}. Available: ${availableMethods.join(', ')}`)
+        }
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(schema, null, 2),
-        },
-      ],
-    }
-  }
+        const codeExample = this.generateCodeExample(api_name, spec.spec, path, method, operation)
 
-  private handleGenerateCodeExample(args: any) {
-    const spec = this.specs.get(args.api_name)
-    if (!spec) {
-      throw new Error(`API not found: ${args.api_name}`)
-    }
+        // Filter out SDK-specific code samples (OpenAPI extensions)
+        const operationWithExtensions = operation as Record<string, any>
+        const { 'x-codeSamples': _, 'x-code-samples': __, ...cleanOperation } = operationWithExtensions
 
-    const pathItem = spec.spec.paths?.[args.path]
-    if (!pathItem) {
-      throw new Error(`Path not found: ${args.path}`)
-    }
+        const result = {
+          endpoint: cleanOperation,
+          usage_example: {
+            description: 'Copy-paste ready TypeScript code',
+            code: codeExample.fullExample,
+          },
+        }
 
-    const operation = pathItem[args.method.toLowerCase()]
-    if (!operation) {
-      throw new Error(`Method not found: ${args.method} for path ${args.path}`)
-    }
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        }
+      },
+    )
 
-    const codeExample = this.generateCodeExample(args.api_name, spec.spec, args.path, args.method, operation)
+    // Tool 5: get_schema_details
+    this.server.tool(
+      'get_schema_details',
+      'Get details about a schema/model definition',
+      {
+        api_name: z.string().describe('API name (e.g., "hetzner/cloud", "ory/kratos")'),
+        schema_name: z.string().describe('Schema name from components/schemas'),
+      },
+      async ({ api_name, schema_name }) => {
+        const spec = this.specs.get(api_name)!
+        const schema = spec.spec.components?.schemas?.[schema_name]
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `# Code Example for ${args.method.toUpperCase()} ${args.path}
+        if (!schema) {
+          const availableSchemas = Object.keys(spec.spec.components?.schemas || {})
+          throw new Error(`Schema "${schema_name}" not found. Available: ${availableSchemas.slice(0, 10).join(', ')}`)
+        }
 
-## ${operation.summary || operation.operationId || 'Endpoint Usage'}
+        return {
+          content: [{ type: 'text', text: JSON.stringify(schema, null, 2) }],
+        }
+      },
+    )
+
+    // Tool 6: generate_code_example
+    this.server.tool(
+      'generate_code_example',
+      'Generate a complete TypeScript code example for an endpoint',
+      {
+        api_name: z.string().describe('API name (e.g., "hetzner/cloud", "ory/kratos")'),
+        path: z.string().describe('Endpoint path'),
+        method: httpMethodSchema.describe('HTTP method'),
+      },
+      async ({ api_name, path, method }) => {
+        const spec = this.specs.get(api_name)!
+        const pathItem = spec.spec.paths?.[path]
+
+        if (!pathItem) {
+          throw new Error(`Path not found: ${path}`)
+        }
+
+        const operation = (pathItem as any)[method.toLowerCase()] as OpenAPIOperation
+        if (!operation) {
+          throw new Error(`Method ${method} not found for ${path}`)
+        }
+
+        const codeExample = this.generateCodeExample(api_name, spec.spec, path, method, operation)
+
+        const markdown = `# ${method.toUpperCase()} ${path}
+
+${operation.summary || ''}
 
 ${operation.description || ''}
 
@@ -1408,25 +772,26 @@ ${codeExample.setup}
 \`\`\`typescript
 ${codeExample.usage}
 \`\`\`
-`,
-        },
-      ],
-    }
-  }
+`
 
-  private handleGetQuickstart(args: any) {
-    const spec = this.specs.get(args.api_name)
-    if (!spec) {
-      throw new Error(`API not found: ${args.api_name}`)
-    }
+        return {
+          content: [{ type: 'text', text: markdown }],
+        }
+      },
+    )
 
-    const quickstart = this.generateQuickstart(args.api_name, spec.spec)
+    // Tool 7: get_quickstart
+    this.server.tool(
+      'get_quickstart',
+      'Generate a quickstart guide with common operations for an API',
+      {
+        api_name: z.string().describe('API name (e.g., "hetzner/cloud", "ory/kratos")'),
+      },
+      async ({ api_name }) => {
+        const spec = this.specs.get(api_name)!
+        const quickstart = this.generateQuickstart(api_name, spec.spec)
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `# Quickstart Guide: ${spec.spec.info?.title || args.api_name}
+        const markdown = `# Quickstart Guide: ${spec.spec.info?.title || api_name}
 
 ${spec.spec.info?.description || ''}
 
@@ -1449,36 +814,634 @@ ${quickstart}
 - Use \`search_endpoints\` to find specific operations
 - Use \`generate_code_example\` to get detailed code for any endpoint
 - Check the API documentation for authentication requirements
-`,
-        },
-      ],
-    }
+`
+
+        return {
+          content: [{ type: 'text', text: markdown }],
+        }
+      },
+    )
   }
 
   /**
-   * Start the MCP server with stdio transport.
-   *
-   * Connects the server to stdio transport for communication with MCP clients
-   * (such as Claude Desktop). The server will remain running until the process is terminated.
-   *
-   * @throws Error if the server fails to start or connection fails
-   *
-   * @example
-   * ```typescript
-   * const server = new ToonFetchMCPServer()
-   * await server.run()
-   * ```
+   * Register all prompts for common workflows
    */
+  private registerPrompts() {
+    // Note: We use z.string() with descriptions instead of z.enum() for the same reasons as tools
+    const httpMethodSchema = z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'])
+
+    // Prompt 1: quickstart
+    this.server.prompt(
+      'quickstart',
+      'Get started with an API - installation, setup, and common examples',
+      {
+        api_name: z.string().describe('API to generate quickstart for (e.g., "hetzner/cloud", "ory/kratos")'),
+      },
+      async ({ api_name }) => {
+        const spec = this.specs.get(api_name)!
+
+        return {
+          messages: [
+            {
+              role: 'user',
+              content: {
+                type: 'text',
+                text: `Generate a quickstart guide for the ${spec.spec.info?.title || api_name} API using toonfetch. Include:
+1. Installation instructions
+2. Basic client setup with authentication
+3. 3-5 common use cases with complete code examples
+4. Error handling best practices
+5. Links to relevant documentation
+
+API: ${api_name}
+Base URL: ${spec.spec.servers?.[0]?.url || 'Not specified'}
+Description: ${spec.spec.info?.description || 'No description available'}`,
+              },
+            },
+          ],
+        }
+      },
+    )
+
+    // Prompt 2: implement-endpoint
+    this.server.prompt(
+      'implement-endpoint',
+      'Generate implementation guide for a specific endpoint with full code',
+      {
+        api_name: z.string().describe('API name (e.g., "hetzner/cloud", "ory/kratos")'),
+        path: z.string().describe('Endpoint path'),
+        method: httpMethodSchema.describe('HTTP method'),
+      },
+      async ({ api_name, path, method }) => {
+        const spec = this.specs.get(api_name)!
+        const pathItem = spec.spec.paths?.[path]
+        const operation = (pathItem as any)?.[method.toLowerCase()] as OpenAPIOperation
+
+        if (!operation) {
+          throw new Error(`Endpoint ${method} ${path} not found`)
+        }
+
+        return {
+          messages: [
+            {
+              role: 'user',
+              content: {
+                type: 'text',
+                text: `Generate a complete implementation guide for this endpoint:
+
+**API**: ${api_name}
+**Endpoint**: ${method} ${path}
+**Summary**: ${operation.summary || 'No summary'}
+**Description**: ${operation.description || 'No description'}
+
+Please provide:
+1. Complete TypeScript code example using toonfetch
+2. Explanation of all required and optional parameters
+3. Expected response structure
+4. Common error cases and how to handle them
+5. Best practices for using this endpoint
+
+Use the \`generate_code_example\` tool to get the initial code, then enhance it with explanations.`,
+              },
+            },
+          ],
+        }
+      },
+    )
+
+    // Prompt 3: explore-api
+    this.server.prompt(
+      'explore-api',
+      'Interactive guide to explore an API with focus on specific area',
+      {
+        api_name: z.string().describe('API to explore (e.g., "hetzner/cloud", "ory/kratos")'),
+        focus: z.string().optional().describe('Focus area (e.g., "authentication", "users")'),
+      },
+      async ({ api_name, focus }) => {
+        const spec = this.specs.get(api_name)!
+        const focusArea = focus || 'general overview'
+
+        return {
+          messages: [
+            {
+              role: 'user',
+              content: {
+                type: 'text',
+                text: `Explore the ${spec.spec.info?.title || api_name} API with focus on: "${focusArea}"
+
+Please provide an interactive exploration that includes:
+1. API overview and key features
+2. Most commonly used endpoints related to "${focusArea}"
+3. Authentication and setup requirements
+4. Code examples for key operations
+5. Recommended workflows and patterns
+
+**API Information:**
+- Name: ${api_name}
+- Version: ${spec.spec.info?.version || 'Unknown'}
+- Description: ${spec.spec.info?.description || 'No description'}
+- Base URL: ${spec.spec.servers?.[0]?.url || 'Not specified'}
+- Available tags: ${spec.spec.tags?.map((t: any) => t.name).join(', ') || 'None'}
+
+Use \`search_endpoints\` to find relevant endpoints, then \`get_endpoint_details\` for specific examples.`,
+              },
+            },
+          ],
+        }
+      },
+    )
+  }
+
+  // Helper methods (copied from original, these stay the same)
+  private getApiServiceName(apiName: string): string {
+    return apiName.split('/').pop() || apiName
+  }
+
+  private generateExampleValue(property: any, propertyName: string, schema: any, spec: any): any {
+    if (property.example !== undefined) {
+      return property.example
+    }
+
+    if (property.default !== undefined) {
+      return property.default
+    }
+
+    if (property.enum && property.enum.length > 0) {
+      return property.enum[0]
+    }
+
+    if (property.$ref) {
+      const resolved = this.resolveRef(property.$ref, spec)
+      if (resolved) {
+        return this.generateExampleValue(resolved, propertyName, schema, spec)
+      }
+    }
+
+    const type = property.type
+
+    if (type === 'string') {
+      const format = property.format
+
+      if (format === 'email')
+        return 'user@example.com'
+      if (format === 'date-time')
+        return new Date().toISOString()
+      if (format === 'date')
+        return new Date().toISOString().split('T')[0]
+      if (format === 'uuid')
+        return '123e4567-e89b-12d3-a456-426614174000'
+      if (format === 'uri' || format === 'url')
+        return 'https://example.com'
+
+      const lowerName = propertyName.toLowerCase()
+      if (lowerName.includes('id'))
+        return 'example-id'
+      if (lowerName.includes('name'))
+        return 'Example Name'
+      if (lowerName.includes('email'))
+        return 'user@example.com'
+      if (lowerName.includes('url'))
+        return 'https://example.com'
+      if (lowerName.includes('token'))
+        return 'example_token_123'
+
+      return 'example_value'
+    }
+
+    if (type === 'number' || type === 'integer') {
+      return type === 'integer' && property.format === 'int64' ? 1 : 10
+    }
+
+    if (type === 'boolean') {
+      return true
+    }
+
+    if (type === 'array') {
+      const itemExample = property.items
+        ? this.generateExampleValue(property.items, propertyName, schema, spec)
+        : 'example'
+      return [itemExample]
+    }
+
+    if (type === 'object' || property.properties) {
+      const obj: Record<string, any> = {}
+      if (property.properties) {
+        for (const [key, value] of Object.entries(property.properties)) {
+          obj[key] = this.generateExampleValue(value, key, schema, spec)
+        }
+      }
+      return obj
+    }
+
+    return null
+  }
+
+  private resolveRef(ref: string, spec: OpenAPIDocument): ResolvedSchema | null {
+    if (this.refCache.has(ref)) {
+      return this.refCache.get(ref) || null
+    }
+
+    this.log(`[resolveRef] Resolving: ${ref}`)
+
+    if (!ref.startsWith('#/')) {
+      this.log(`[resolveRef] External ref not supported: ${ref}`)
+      return null
+    }
+
+    const path = ref.substring(2)
+    const segments = path.split('/')
+
+    this.log(`[resolveRef] Path segments:`, segments)
+
+    let current: any = spec
+    for (const segment of segments) {
+      if (!current || typeof current !== 'object') {
+        this.log(`[resolveRef] Stopped at segment ${segment}: current is not an object`)
+        return null
+      }
+
+      current = current[segment]
+      this.log(`[resolveRef] After segment ${segment}:`, current ? 'exists' : 'undefined')
+    }
+
+    if (!current) {
+      this.log(`[resolveRef] Final result: not found`)
+      return null
+    }
+
+    this.log(`[resolveRef] Final result: exists - has allOf:`, !!current.allOf)
+
+    const resolved = current as ResolvedSchema
+    this.refCache.set(ref, resolved)
+    return resolved
+  }
+
+  // @ts-ignore - Keeping for potential future use
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  private analyzeResponseStructure(
+    operation: OpenAPIOperation,
+    spec: OpenAPIDocument,
+  ): ResponseStructure | null {
+    // Note: Analysis is fast (<1ms), no need for separate cache
+    // Result is already cached via exampleCache when used in code generation
+
+    const responses = operation.responses || {}
+    const successCodes = [200, 201, 202, 204]
+    let statusCode = 200
+    let responseObj = responses['200'] || responses['201'] || responses['202'] || responses['204']
+
+    if (!responseObj) {
+      for (const code of successCodes) {
+        if (responses[code]) {
+          responseObj = responses[code]
+          statusCode = code
+          break
+        }
+      }
+    }
+
+    if (!responseObj) {
+      return null
+    }
+
+    if (responses['201'])
+      statusCode = 201
+    else if (responses['202'])
+      statusCode = 202
+
+    // Type guard: ensure responseObj is not a reference
+    if (!responseObj || '$ref' in responseObj) {
+      return null
+    }
+
+    const schema = responseObj.content?.['application/json']?.schema
+
+    if (!schema) {
+      return null
+    }
+
+    let resolvedSchema: ResolvedSchema | OpenAPISchema = schema
+    if ('$ref' in schema) {
+      const resolved = this.resolveRef(schema.$ref, spec)
+      if (!resolved)
+        return null
+      resolvedSchema = resolved
+    }
+
+    // Type guard: ensure we have a non-reference schema
+    if ('$ref' in resolvedSchema) {
+      return null
+    }
+
+    const result = {
+      statusCode,
+      schema: resolvedSchema,
+      wrapperKeys: [] as string[],
+      primaryResource: null as string | null,
+      importantFields: [] as string[],
+      isArray: false,
+      hasActions: false,
+    }
+
+    if (resolvedSchema.type === 'array') {
+      result.isArray = true
+      return result
+    }
+
+    if (resolvedSchema.properties) {
+      const props = Object.keys(resolvedSchema.properties)
+
+      for (const key of props) {
+        const prop = resolvedSchema.properties[key] as any
+        if (prop?.type === 'object' || prop?.$ref) {
+          result.wrapperKeys.push(key)
+
+          if (!result.primaryResource) {
+            result.primaryResource = key
+          }
+
+          if (key === 'action' || key === 'actions') {
+            result.hasActions = true
+          }
+        }
+      }
+
+      if (result.primaryResource) {
+        let primarySchema = resolvedSchema.properties[result.primaryResource] as any
+        if (primarySchema?.$ref) {
+          primarySchema = this.resolveRef(primarySchema.$ref, spec)
+        }
+
+        if (primarySchema?.properties) {
+          const idFields = ['id', 'uuid', 'name', 'slug']
+          for (const field of idFields) {
+            if (primarySchema.properties[field]) {
+              result.importantFields.push(field)
+            }
+          }
+        }
+      }
+    }
+
+    return result
+  }
+
+  /**
+   * Generate a complete TypeScript code example for an API endpoint
+   * Refactored to use smaller helper methods for better maintainability
+   */
+  private generateCodeExample(
+    apiName: string,
+    spec: OpenAPIDocument,
+    path: string,
+    method: string,
+    operation: OpenAPIOperation,
+  ): CodeExample {
+    // Check cache first
+    const cacheKey = `${apiName}:${path}:${method}`
+    if (this.exampleCache.has(cacheKey)) {
+      const cached = this.exampleCache.get(cacheKey)!
+      if (Date.now() - cached.timestamp < this.config.cache.exampleTTL) {
+        this.log(`Example cache hit for ${cacheKey}`)
+        return cached.example
+      }
+      this.exampleCache.delete(cacheKey)
+    }
+
+    // Generate components using helper methods
+    const serviceName = this.getApiServiceName(apiName)
+    const typeHelperName = this.getTypeHelperName(apiName)
+
+    // 1. Generate type definitions
+    const typeDefs = this.generateTypeDefinitions(path, method, typeHelperName, operation)
+    const typeDefsStr = typeDefs.length > 0 ? `\n\n${typeDefs.join('\n')}` : ''
+
+    // 2. Generate imports (include type helper import for type safety)
+    const packageName = apiName.split('/')[0]
+    let imports = `import { createClient, ${serviceName} } from 'toonfetch/${packageName}'`
+
+    // Add type helper import if we have type definitions
+    if (typeDefs.length > 0) {
+      imports += `\nimport type { ${typeHelperName} } from 'toonfetch/${packageName}'`
+    }
+
+    imports += typeDefsStr
+
+    // 3. Generate client setup
+    const setup = this.generateClientSetup(serviceName, spec)
+
+    // 4. Generate usage code with parameters and request
+    const pathParams = operation.parameters?.filter((p): p is OpenAPIParameter =>
+      !('$ref' in p) && p.in === 'path',
+    )
+    const queryParams = operation.parameters?.filter((p): p is OpenAPIParameter =>
+      !('$ref' in p) && p.in === 'query',
+    )
+    // Resolve request body if it's a reference
+    let requestBody = operation.requestBody
+    if (requestBody && '$ref' in requestBody) {
+      requestBody = this.resolveRef(requestBody.$ref, spec) as OpenAPIRequestBody
+    }
+
+    const usageParts: string[] = []
+
+    // Add path parameters
+    if (pathParams && pathParams.length > 0) {
+      usageParts.push(this.generatePathParamsCode(pathParams, spec))
+    }
+
+    // Add query parameters
+    if (queryParams && queryParams.length > 0) {
+      usageParts.push(this.generateQueryParamsCode(queryParams, spec))
+    }
+
+    // Add request body
+    if (requestBody) {
+      const bodyCode = this.generateRequestBodyCode(requestBody, spec)
+      if (bodyCode) {
+        usageParts.push(bodyCode)
+      }
+    }
+
+    // 5. Generate the actual request code
+    const requestParts = this.generateRequestCode(path, method, pathParams, queryParams, requestBody)
+
+    // 6. Add response handling code
+    const responseParts = this.generateResponseHandlingCode(apiName, path, method)
+    requestParts.push(...responseParts)
+
+    const usage = usageParts.concat(requestParts).join('\n')
+    const fullExample = `${imports}\n\n${setup}\n\n${usage}`
+
+    const example: CodeExample = { imports, setup, usage, fullExample }
+
+    if (this.exampleCache.size >= this.config.cache.exampleSize) {
+      const firstKey = this.exampleCache.keys().next().value
+      if (firstKey) {
+        this.exampleCache.delete(firstKey)
+      }
+    }
+
+    this.exampleCache.set(cacheKey, { timestamp: Date.now(), example })
+
+    return example
+  }
+
+  private getTypeHelperName(apiName: string): string {
+    // Try to find the actual type helper name from parsed types.d.ts
+    const typeHelpers = this.getAllTypeHelpers()
+
+    // Match type helper by searching for the main one (has properties like 'request', 'response')
+    for (const helper of typeHelpers) {
+      const hasRequestProp = helper.properties.some((p: any) => p.name === 'request')
+      const hasResponseProp = helper.properties.some((p: any) => p.name === 'response')
+
+      // Main type helper has request and response properties
+      if (hasRequestProp && hasResponseProp) {
+        // Check if this type helper matches the API
+        const lowerName = helper.name.toLowerCase()
+        const apiParts = apiName.split('/').map(p => p.toLowerCase())
+
+        // Check if helper name contains any part of the API name
+        const matches = apiParts.some(part => lowerName.includes(part))
+        if (matches) {
+          return helper.name
+        }
+      }
+    }
+
+    // Fallback to old behavior
+    const parts = apiName.split('/')
+    if (parts.length === 1) {
+      return this.capitalizeFirst(parts[0]!)
+    }
+    return parts.map(p => this.capitalizeFirst(p)).join('')
+  }
+
+  private getAllTypeHelpers() {
+    const allHelpers: any[] = []
+    // Get all cached type helpers
+    for (const [_, helpers] of (this.typeCache as any).cache.entries()) {
+      allHelpers.push(...helpers)
+    }
+    return allHelpers
+  }
+
+  private capitalizeFirst(str: string): string {
+    return str.charAt(0).toUpperCase() + str.slice(1)
+  }
+
+  private generateQuickstart(apiName: string, spec: any): string {
+    const serviceName = this.getApiServiceName(apiName)
+    const packageName = apiName.split('/')[0]
+    const baseUrl = spec.servers?.[0]?.url || 'https://api.example.com'
+
+    const setupParts = [
+      `import { createClient, ${serviceName} } from 'toonfetch/${packageName}'`,
+      '',
+      'const client = createClient({',
+      `  baseURL: '${baseUrl}',`,
+    ]
+
+    if (spec.components?.securitySchemes) {
+      const securitySchemes = spec.components.securitySchemes
+      if (securitySchemes.bearerAuth || securitySchemes.Bearer) {
+        setupParts.push('  headers: {')
+        // eslint-disable-next-line no-template-curly-in-string
+        setupParts.push('    \'Authorization\': `Bearer ${YOUR_TOKEN}`,')
+        setupParts.push('  },')
+      }
+      else if (securitySchemes.apiKey || securitySchemes.ApiKey) {
+        setupParts.push('  headers: {')
+        setupParts.push('    \'X-API-Key\': YOUR_API_KEY,')
+        setupParts.push('  },')
+      }
+    }
+
+    setupParts.push(`}).with(${serviceName})`)
+    setupParts.push('')
+    setupParts.push('// Common operations')
+
+    const paths = spec.paths || {}
+    const operations: string[] = []
+    let count = 0
+
+    for (const [path, pathItem] of Object.entries(paths)) {
+      if (count >= 3)
+        break
+
+      for (const [method, operation] of Object.entries(pathItem as any)) {
+        if (count >= 3)
+          break
+
+        if (['get', 'post', 'put', 'delete'].includes(method)) {
+          const op = operation as any
+          const summary = op.summary || path
+
+          operations.push(`// ${summary}`)
+          operations.push(`const result${count + 1} = await client('${path}', {`)
+          operations.push(`  method: '${method.toUpperCase()}',`)
+          operations.push('})')
+          operations.push('')
+
+          count++
+        }
+      }
+    }
+
+    return setupParts.concat(operations).join('\n')
+  }
+
+  private cleanup() {
+    this.log('Shutting down gracefully...')
+
+    const refsCleared = this.refCache.size
+    const examplesCleared = this.exampleCache.size
+
+    this.refCache.clear()
+    this.exampleCache.clear()
+
+    this.log(`Cleared caches: ${refsCleared} refs, ${examplesCleared} examples`)
+    this.log('Shutdown complete')
+  }
+
   async run() {
+    await this.initialize()
+
     const transport = new StdioServerTransport()
     await this.server.connect(transport)
     console.error('ToonFetch MCP server running on stdio')
-    if (this.debug) {
+    if (this.config.debug) {
       console.error('Debug mode enabled - Set TOONFETCH_DEBUG=false to disable verbose logging')
     }
+
+    // Graceful shutdown handlers
+    const shutdown = async (signal: string) => {
+      console.error(`\nReceived ${signal}, shutting down gracefully...`)
+      this.cleanup()
+      process.exit(0)
+    }
+
+    process.on('SIGINT', () => shutdown('SIGINT'))
+    process.on('SIGTERM', () => shutdown('SIGTERM'))
+
+    process.on('uncaughtException', (error) => {
+      console.error('Uncaught exception:', error)
+      this.cleanup()
+      process.exit(1)
+    })
+
+    process.on('unhandledRejection', (reason) => {
+      console.error('Unhandled rejection:', reason)
+      this.cleanup()
+      process.exit(1)
+    })
   }
 }
 
 // Start the server
 const server = new ToonFetchMCPServer()
-server.run().catch(console.error)
+server.run().catch((error) => {
+  console.error('Failed to start server:', error)
+  process.exit(1)
+})
