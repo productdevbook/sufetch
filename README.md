@@ -27,7 +27,7 @@ SuFetch combines two powerful tools:
 1. **Type-Safe API Clients** - Generate fully-typed TypeScript clients from OpenAPI specifications
 2. **MCP Server** - Let AI assistants (like Claude) explore your APIs and generate code
 
-Built with [apiful](https://github.com/lisnote/apiful) for type-safe OpenAPI clients.
+Built with [apiful](https://github.com/johannschopplich/apiful) for type-safe OpenAPI clients.
 
 ## Features
 
